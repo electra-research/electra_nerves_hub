@@ -121,3 +121,9 @@ config :nerves_hub,
   open_for_registrations: true
 
 config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
+
+config :ex_aws, :s3,
+  access_key_id: System.fetch_env!("S3_ACCESS_KEY_ID"),
+  secret_access_key: System.fetch_env!("S3_SECRET_ACCESS_KEY"),
+  bucket: System.fetch_env!("S3_BUCKET_NAME"),
+  host: System.fetch_env!("S3_HOST")
