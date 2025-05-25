@@ -21,8 +21,8 @@ defmodule NervesHub.Logs.BatchProcessor do
   defp select_stored_logs(log_reqs) do
     Enum.flat_map(log_reqs, fn
       {l, {:ok, _}} -> [l.id]
-      {l, _} ->
-        Logger.warning("[#{__MODULE__}] log not stored in s3, retaining: #{l.id}")
+      {l, error} ->
+        Logger.warning("[#{__MODULE__}] log #{l.id} not stored in s3, retaining: #{inspect(error)}")
         []
     end)
   end
