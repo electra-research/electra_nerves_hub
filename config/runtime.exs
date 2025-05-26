@@ -467,3 +467,10 @@ if System.get_env("GOOGLE_CLIENT_ID") do
     client_id: System.get_env("GOOGLE_CLIENT_ID"),
     client_secret: System.get_env("GOOGLE_CLIENT_SECRET")
 end
+
+# S3
+config :ex_aws, :s3,
+  access_key_id: System.get_env("S3_ACCESS_KEY_ID"),
+  secret_access_key: System.get_env("S3_SECRET_ACCESS_KEY"),
+  bucket: System.get_env("S3_BUCKET_NAME"),
+  host: System.get_env("S3_HOST")
