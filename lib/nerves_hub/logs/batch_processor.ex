@@ -4,12 +4,12 @@ defmodule NervesHub.Logs.BatchProcessor do
   alias NervesHub.Repo
   alias NervesHub.Logs.Log
   require Logger
-  @interval 60_000 # every minute
-  @batch_size 1000 # send a thousand logs
+  @interval 1_000 # every second
+  @batch_size 500 # send 500 logs
   @bucket "electra-telemetry"
   def start_link(_), do: Task.start_link(fn ->
     Process.sleep(@interval)
-    Logger.info("[#{__MODULE__}] sending logs...")
+    Logger.debug("[#{__MODULE__}] sending logs...")
     from(l in Log, order_by: l.logged_at, limit: @batch_size, preload: [:device])
     |> Repo.all()
     |> store_logs()
@@ -17,15 +17,6 @@ defmodule NervesHub.Logs.BatchProcessor do
     |> select_stored_logs()
     |> delete_stored_logs()
   end)
-
-  defp select_stored_logs(log_reqs) do
-    Enum.flat_map(log_reqs, fn
-      {l, {:ok, _}} -> [l.id]
-      {l, error} ->
-        Logger.warning("[#{__MODULE__}] log #{l.id} not stored in s3, retaining: #{inspect(error)}")
-        []
-    end)
-  end
 
   defp store_logs(logs) do
     Enum.map(logs, fn l ->
@@ -39,7 +30,17 @@ defmodule NervesHub.Logs.BatchProcessor do
     end)
   end
 
+  defp select_stored_logs(log_reqs) do
+    Enum.flat_map(log_reqs, fn
+      {l, {:ok, _}} -> [l.id]
+      {l, error} ->
+        Logger.warning("[#{__MODULE__}] log #{l.id} not stored in s3, retaining: #{inspect(error)}")
+        []
+    end)
+  end
+
   defp delete_stored_logs(ids) do
+    Logger.debug("[#{__MODULE__}] sent #{length(ids)} logs, deleting local copies")
     from(l in Log, where: l.id in ^ids)
     |> Repo.delete_all()
   end
