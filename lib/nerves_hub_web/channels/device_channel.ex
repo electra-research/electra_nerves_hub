@@ -292,6 +292,14 @@ defmodule NervesHubWeb.DeviceChannel do
     {:noreply, socket}
   end
 
+  def handle_in("logs", %{"level" => level, "timestamp" => ts, "message" => msg}, socket) do
+    device = socket.assigns.device
+    Logger.info("[DeviceChannel] [#{device.identifier}] [#{level}] #{ts} - #{msg}")
+    {:ok, ts, _} = DateTime.from_iso8601(ts)
+    NervesHub.Logs.create_log(device, level, ts, msg)
+    {:noreply, socket}
+  end
+
   def handle_in(msg, params, socket) do
     # Ignore unhandled messages so that it doesn't crash the link process
     # preventing cascading problems.

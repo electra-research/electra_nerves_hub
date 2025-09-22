@@ -297,7 +297,7 @@
               <select name="uuid" class="form-control">
                 <option value="">Select a version</option>
                 <%= for firmware <- @firmwares do %>
-                  <option value={firmware.uuid}>{firmware.version}</option>
+                  <option value={firmware.uuid}>{firmware.version} ({String.slice(firmware.uuid, 0..7)})</option>
                 <% end %>
               </select>
               <button class="btn btn-secondary ml-2">Send</button>

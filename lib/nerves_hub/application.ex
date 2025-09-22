@@ -40,7 +40,8 @@ defmodule NervesHub.Application do
           {Cluster.Supervisor, [topologies]},
           {Task.Supervisor, name: NervesHub.TaskSupervisor},
           {Oban, Application.fetch_env!(:nerves_hub, Oban)},
-          NervesHubWeb.Presence
+          NervesHubWeb.Presence,
+          NervesHub.Logs.BatchProcessor
         ] ++
         deployments_orchestrator(deploy_env()) ++
         endpoints(deploy_env())
