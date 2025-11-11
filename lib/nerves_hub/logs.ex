@@ -1,14 +1,12 @@
 defmodule NervesHub.Logs do
-  require Logger
   alias NervesHub.Logs.Log
-  alias NervesHub.Repo
-  def create_log(device, level, timestamp, message) do
-    %Log{
+
+  def create_log(device, message) do
+    NervesHub.Repo.insert(%Log{
       device: device,
-      level: level,
-      logged_at: timestamp,
+      level: "",
+      logged_at: DateTime.utc_now(),
       message: message,
-    }
-    |> Repo.insert()
+    })
   end
 end
