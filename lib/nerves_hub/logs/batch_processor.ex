@@ -4,11 +4,11 @@ defmodule NervesHub.Logs.BatchProcessor do
   alias NervesHub.Repo
   alias NervesHub.Logs.Log
   require Logger
-  @interval 60_000 # every minute
-  @batch_size 1000 # send a thousand logs
+  @interval_ms 60_000 # every minute
+  @batch_size 1000 # send up to a thousand logs
   @bucket "electra-telemetry"
   def start_link(_), do: Task.start_link(fn ->
-    Process.sleep(@interval)
+    Process.sleep(@interval_ms)
     Logger.info("[#{__MODULE__}] sending logs...")
     from(l in Log, order_by: l.logged_at, limit: @batch_size, preload: [:device])
     |> Repo.all()
@@ -20,22 +20,31 @@ defmodule NervesHub.Logs.BatchProcessor do
 
   defp select_stored_logs(log_reqs) do
     Enum.flat_map(log_reqs, fn
-      {l, {:ok, _}} -> [l.id]
-      {l, error} ->
-        Logger.warning("[#{__MODULE__}] log #{l.id} not stored in s3, retaining: #{inspect(error)}")
+      {logs, {:ok, _}} -> Enum.map(logs, fn l -> l.id end)
+      {[l|_]=logs, error} ->
+        Logger.error("[#{__MODULE__}] #{Enum.count(logs)} logs for #{l.device.identifier} not stored in s3, retaining: #{inspect(error)}")
         []
     end)
   end
 
+  def object_name_and_contents(did, [l0 | _ ] = logs) do
+    name = "#{did}/#{l0.logged_at}"
+    contents = Enum.join(Enum.map(logs, &logfmt/1), "\n")
+    {name, contents}
+  end
+
+
+  defp logfmt(l) do
+    "#{l.logged_at} [#{l.level}] #{l.message}"
+  end
+
   defp store_logs(logs) do
-    Enum.map(logs, fn l ->
-      req = ExAws.S3.put_object(
-        @bucket,
-        "#{l.device.identifier}/#{l.logged_at}",
-        "[#{l.level}] #{l.message}",
-        []
-      )
-      Task.async(fn -> {l, ExAws.request(req)} end)
+    logs
+    |> Enum.group_by(fn l -> l.device.identifier end)
+    |> Enum.map(fn {did, logs} ->
+      {name, contents} = object_name_and_contents(did, logs)
+      req = ExAws.S3.put_object(@bucket, name, contents, [])
+      Task.async(fn -> {logs, ExAws.request(req)} end)
     end)
   end
 
