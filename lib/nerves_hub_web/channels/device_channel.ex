@@ -298,7 +298,7 @@ defmodule NervesHubWeb.DeviceChannel do
     Enum.each(fn %{"level" => level, "timestamp" => ts, "message" => msg} ->
       if level != "debug" do
         {:ok, ts, _} = DateTime.from_iso8601(ts)
-        NervesHub.Logs.create_log(device, level, ts, msg)
+        NervesHub.Logs.create_log(device, level, ts, to_string(msg))
       end
     end)
     {:noreply, socket}
