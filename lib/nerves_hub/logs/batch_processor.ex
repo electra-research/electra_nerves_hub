@@ -28,7 +28,9 @@ defmodule NervesHub.Logs.BatchProcessor do
   end
 
   def object_name_and_contents(did, [l0 | _ ] = logs) do
-    name = "#{did}/#{l0.logged_at}"
+    dt = DateTime.truncate(l0.logged_at, :millisecond)
+    date = DateTime.to_date(dt)
+    name = "#{did}/#{date}/#{dt}.txt" |> String.replace(" ", "_")
     contents = Enum.join(Enum.map(logs, &logfmt/1), "\n")
     {name, contents}
   end

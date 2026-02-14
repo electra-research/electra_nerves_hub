@@ -19,7 +19,9 @@ defmodule NervesHub.Logs.BatchProcessorTest do
   test "object_name_and_contents/2", %{device: device} do
     did = device.identifier
     logs = Enum.map(1..10, fn n -> random_log(device, n) end)
-    expected_name = "#{did}/#{List.first(logs).logged_at}"
+    dt = DateTime.truncate(List.first(logs).logged_at, :millisecond)
+    expected_name = "#{did}/#{DateTime.to_date(dt)}/#{dt}.txt"
+                    |> String.replace(" ", "_")
     expected_contents = logs
                         |> Enum.map(fn l -> "#{l.logged_at} [#{l.level}] #{l.message}" end)
                         |> Enum.join("\n")
