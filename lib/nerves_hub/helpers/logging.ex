@@ -19,6 +19,19 @@ defmodule NervesHub.Helpers.Logging do
     :ok
   end
 
+  @doc """
+  Helper function for logging a message to Sentry without a resource.
+
+  * `message`: A binary description.
+  * `extra`: A map to provide any other details to Sentry.
+  """
+  @spec log_message_to_sentry(binary(), map()) :: :ok
+  def log_message_to_sentry(message, extra \\ %{}) do
+    _ = send_to_sentry(message, extra)
+
+    :ok
+  end
+
   defp set_sentry_tags(%Device{} = device),
     do:
       Sentry.Context.set_tags_context(%{
@@ -39,6 +52,5 @@ defmodule NervesHub.Helpers.Logging do
   defp send_to_sentry(exception, extra) when is_exception(exception),
     do: Sentry.capture_exception(exception, extra: extra, result: :none)
 
-  defp send_to_sentry(message, extra),
-    do: Sentry.capture_message(message, extra: extra, result: :none)
+  defp send_to_sentry(message, extra), do: Sentry.capture_message(message, extra: extra, result: :none)
 end

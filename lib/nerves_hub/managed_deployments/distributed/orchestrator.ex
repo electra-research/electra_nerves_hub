@@ -10,23 +10,22 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
   use GenServer
   use OpenTelemetryDecorator
 
-  require Logger
-
   alias NervesHub.Devices
   alias NervesHub.Devices.Device
   alias NervesHub.ManagedDeployments
   alias NervesHub.ManagedDeployments.DeploymentGroup
-
   alias Phoenix.PubSub
   alias Phoenix.Socket.Broadcast
+
+  require Logger
 
   @maybe_trigger_interval 3_000
 
   defmodule State do
     defstruct deployment_group: nil,
               rate_limit?: true,
-              timer_ref: nil,
-              should_run?: false
+              should_run?: false,
+              timer_ref: nil
 
     @type t ::
             %__MODULE__{
@@ -61,7 +60,7 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
       PubSub.subscribe(NervesHub.PubSub, "orchestrator:deployment:#{deployment_group.id}")
 
     # trigger every two minutes, plus a jitter between 1 and 10 seconds, as a back up
-    interval = :timer.seconds(120 + :rand.uniform(20))
+    interval = to_timeout(second: 120 + :rand.uniform(20))
     _ = :timer.send_interval(interval, :trigger_interval)
 
     {:ok, deployment_group} = ManagedDeployments.get_deployment_group(deployment_group)
@@ -78,8 +77,23 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
     {:ok, state}
   end
 
+  def terminate(reason, state) do
+    Logger.info("Orchestrator terminated",
+      deployment_id: state.deployment_group.id,
+      reason: inspect(reason)
+    )
+
+    :ok
+  end
+
   @doc """
   Trigger an update for a deployments devices.
+
+  If deployment group's status is `:preparing`, check if deltas are still being
+  generated. If so, do nothing. If not, set the status to `:ready` and update devices.
+
+  If deployment group's status is `:ready`, attempt to generated deltas if deployment
+  group has them enabled. Then update devices.
 
   Finds devices matching:
 
@@ -95,27 +109,72 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
   As devices update and reconnect, the new orchestrator is told that the update
   was successful, and the process is repeated.
   """
-  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.trigger_update#noop")
-  def trigger_update(%DeploymentGroup{is_active: false}) do
-    :ok
+  @spec trigger_update(DeploymentGroup.t()) :: DeploymentGroup.t()
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.trigger_update#noop-inactive")
+  def trigger_update(%DeploymentGroup{is_active: false} = deployment_group), do: deployment_group
+
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.trigger_update#status-failed")
+  def trigger_update(%DeploymentGroup{status: status} = deployment_group)
+      when status in [:preparing, :deltas_failed, :unknown_error] do
+    deployment_group
   end
 
   @decorate with_span("ManagedDeployments.Distributed.Orchestrator.trigger_update")
   def trigger_update(deployment_group) do
+    do_trigger_update(deployment_group)
+
+    deployment_group
+  end
+
+  defp do_trigger_update(deployment_group) do
     :telemetry.execute([:nerves_hub, :deployments, :trigger_update], %{count: 1})
 
+    # Process priority queue first, if enabled
+    skipped_priority_updates = maybe_do_priority_update(deployment_group)
+
+    # Process normal queue
     slots = available_slots(deployment_group)
 
     if slots > 0 do
       available = Devices.available_for_update(deployment_group, slots)
+      updated_count = schedule_devices!(available, deployment_group, false)
 
-      updated_count = schedule_devices!(available, deployment_group)
-
-      if length(available) != updated_count do
+      if length(available) != updated_count or skipped_priority_updates > 0 do
         # rerun the deployment check since some devices were skipped
         send(self(), :trigger)
       end
     end
+  end
+
+  # Process priority queue updates for devices below the firmware version threshold.
+  # Returns the number of devices that were skipped (not updated).
+  @spec maybe_do_priority_update(DeploymentGroup.t()) :: non_neg_integer()
+
+  defp maybe_do_priority_update(%DeploymentGroup{priority_queue_enabled: false}), do: 0
+
+  defp maybe_do_priority_update(deployment_group) do
+    priority_slots = available_priority_slots(deployment_group)
+
+    if priority_slots > 0 do
+      available = Devices.available_for_priority_update(deployment_group, priority_slots)
+
+      length(available) - schedule_devices!(available, deployment_group, true)
+    else
+      0
+    end
+  end
+
+  @doc """
+  Determine how many devices should update in the priority queue based on
+  the priority queue update limit and the number currently updating in priority queue.
+  """
+  @spec available_priority_slots(DeploymentGroup.t()) :: non_neg_integer()
+  def available_priority_slots(deployment_group) do
+    # Just in case inflight goes higher than concurrent, limit it to 0
+    (deployment_group.priority_queue_concurrent_updates -
+       Devices.count_inflight_priority_updates_for(deployment_group))
+    |> max(0)
+    |> round()
   end
 
   @doc """
@@ -136,12 +195,12 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
 
   Returns the number of devices that were allowed to update.
   """
-  @spec schedule_devices!([Device.t()], DeploymentGroup.t()) :: non_neg_integer()
-  def schedule_devices!(available, deployment_group) do
+  @spec schedule_devices!([Device.t()], DeploymentGroup.t(), boolean()) :: non_neg_integer()
+  def schedule_devices!(available, deployment_group, priority_queue \\ false) do
     Enum.count(available, fn device ->
       case can_device_update?(device, deployment_group) do
         true ->
-          tell_device_to_update(device.id, deployment_group)
+          tell_device_to_update(device.id, deployment_group, priority_queue)
 
         false ->
           _ = Devices.update_blocked_until(device, deployment_group)
@@ -156,11 +215,11 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
            Devices.failure_threshold_met?(device, deployment_group))
   end
 
-  @spec tell_device_to_update(integer(), DeploymentGroup.t()) :: boolean()
-  defp tell_device_to_update(device_id, deployment_group) do
+  @spec tell_device_to_update(integer(), DeploymentGroup.t(), boolean()) :: boolean()
+  defp tell_device_to_update(device_id, deployment_group, priority_queue) do
     :telemetry.execute([:nerves_hub, :deployments, :trigger_update, :device], %{count: 1})
 
-    case Devices.told_to_update(device_id, deployment_group) do
+    case Devices.told_to_update(device_id, deployment_group, priority_queue: priority_queue) do
       {:ok, _} -> true
       _ -> false
     end
@@ -168,18 +227,18 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
 
   # if rate limiting isn't enabled, run `trigger_update`
   defp maybe_trigger_update(%State{rate_limit?: false} = state) do
-    trigger_update(state.deployment_group)
+    deployment_group = trigger_update(state.deployment_group)
 
-    {:noreply, state}
+    {:noreply, %{state | deployment_group: deployment_group}}
   end
 
   # if there is no "delay" timer set, run `trigger_update`
   defp maybe_trigger_update(%State{timer_ref: nil} = state) do
-    trigger_update(state.deployment_group)
+    deployment_group = trigger_update(state.deployment_group)
 
     timer_ref = Process.send_after(self(), :maybe_trigger, @maybe_trigger_interval)
 
-    {:noreply, %{state | timer_ref: timer_ref, should_run?: false}}
+    {:noreply, %{state | timer_ref: timer_ref, should_run?: false, deployment_group: deployment_group}}
   end
 
   # if a "delay" timer is set, queue a `trigger_update`
@@ -190,9 +249,9 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
 
   # if we don't have a `timer_ref` we can run `trigger_update`
   def handle_info(:trigger_interval, %State{timer_ref: nil} = state) do
-    trigger_update(state.deployment_group)
+    deployment_group = trigger_update(state.deployment_group)
 
-    {:noreply, state}
+    {:noreply, %{state | deployment_group: deployment_group}}
   end
 
   # we can ignore `trigger_interval` since we have a `timer_ref`
@@ -203,17 +262,17 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
   # if the 'run again' boolean in the state is `true`, which indicates that indicates
   # that previous call has been skipped, then run `trigger_update` now
   def handle_info(:maybe_trigger, %State{rate_limit?: false} = state) do
-    trigger_update(state.deployment_group)
+    deployment_group = trigger_update(state.deployment_group)
 
-    {:noreply, state}
+    {:noreply, %{state | deployment_group: deployment_group}}
   end
 
   def handle_info(:maybe_trigger, %State{should_run?: true} = state) do
-    trigger_update(state.deployment_group)
+    deployment_group = trigger_update(state.deployment_group)
 
     timer_ref = Process.send_after(self(), :maybe_trigger, @maybe_trigger_interval)
 
-    {:noreply, %{state | timer_ref: timer_ref, should_run?: false}}
+    {:noreply, %{state | timer_ref: timer_ref, should_run?: false, deployment_group: deployment_group}}
   end
 
   # if the 'run again' boolean in the state is `false`, no requests to run the orchestrator
@@ -222,15 +281,9 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
     {:noreply, %{state | timer_ref: nil}}
   end
 
-  @decorate with_span(
-              "ManagedDeployments.Distributed.Orchestrator.handle_info:deployment/device-online"
-            )
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.handle_info:deployment/device-online")
   def handle_info(
-        %Broadcast{
-          topic: "orchestrator:deployment:" <> _rest,
-          event: "device-online",
-          payload: payload
-        },
+        %Broadcast{topic: "orchestrator:deployment:" <> _rest, event: "device-online", payload: payload},
         state
       ) do
     if should_trigger?(payload, state.deployment_group) do
@@ -240,36 +293,31 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
     end
   end
 
-  @decorate with_span(
-              "ManagedDeployments.Distributed.Orchestrator.handle_info:deployment/device-update"
-            )
-  def handle_info(
-        %Broadcast{topic: "orchestrator:deployment:" <> _, event: "device-updated"},
-        state
-      ) do
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.handle_info:deployment/device-added-or-updated")
+  def handle_info(%Broadcast{topic: "orchestrator:deployment:" <> _, event: event}, state)
+      when event in ["device-added", "device-updated", "bulk-devices-added"] do
     maybe_trigger_update(state)
   end
 
-  @decorate with_span(
-              "ManagedDeployments.Distributed.Orchestrator.handle_info:deployments/update"
-            )
-  def handle_info(
-        %Broadcast{topic: "deployment:" <> _, event: "deployments/update"},
-        state
-      ) do
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.handle_info:deployments/update")
+  def handle_info(%Broadcast{topic: "deployment:" <> _, event: "deployments/update"}, state) do
     {:ok, deployment_group} = ManagedDeployments.get_deployment_group(state.deployment_group)
-
     maybe_trigger_update(%{state | deployment_group: deployment_group})
+  end
+
+  @decorate with_span("ManagedDeployments.Distributed.Orchestrator.handle_info:deployments/update")
+  def handle_info(
+        %Broadcast{topic: "deployment:" <> _, event: "status/updated", payload: payload},
+        %{deployment_group: deployment_group} = state
+      ) do
+    maybe_trigger_update(%{state | deployment_group: Map.put(deployment_group, :status, payload.to)})
   end
 
   def handle_info(%Broadcast{topic: "deployment:" <> _, event: "deleted"}, state) do
     {:stop, :normal, state}
   end
 
-  def handle_info(
-        %Broadcast{topic: "orchestrator:deployment:" <> _, event: "deactivated"},
-        state
-      ) do
+  def handle_info(%Broadcast{topic: "orchestrator:deployment:" <> _, event: "deactivated"}, state) do
     {:stop, :normal, state}
   end
 
@@ -297,12 +345,12 @@ defmodule NervesHub.ManagedDeployments.Distributed.Orchestrator do
   end
 
   defp firmware_match?(payload, deployment_group) do
-    payload.firmware_uuid == deployment_group.firmware.uuid
+    payload.firmware_uuid == deployment_group.current_release.firmware.uuid
   end
 
   defp updates_blocked?(payload) do
     !payload.updates_enabled and
       !is_nil(payload.updates_blocked_until) and
-      DateTime.compare(payload.updates_blocked_until, DateTime.utc_now()) == :gt
+      DateTime.after?(payload.updates_blocked_until, DateTime.utc_now())
   end
 end

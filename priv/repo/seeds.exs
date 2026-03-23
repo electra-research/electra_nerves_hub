@@ -39,7 +39,9 @@ defmodule NervesHub.SeedHelpers do
 
     firmwares = firmwares |> List.to_tuple()
 
-    Fixtures.deployment_group_fixture(org_with_keys_and_users, firmwares |> elem(2), %{
+    firmwares
+    |> elem(2)
+    |> Fixtures.deployment_group_fixture(%{
       conditions: %{"version" => "< 1.0.0", "tags" => ["beta"]}
     })
 
@@ -65,7 +67,7 @@ defmodule NervesHub.SeedHelpers do
 end
 
 # Create the root user
-root_user_name = "nerveshub"
+root_user_name = "nerveshubweb"
 root_user_email = "nerveshub@nerves-hub.org"
 # Add a default user
 if root_user = Repo.get_by(User, email: root_user_email) do
@@ -88,7 +90,7 @@ else
     Accounts.create_user(%{
       username: root_user_name,
       email: root_user_email,
-      password: "nerveshub"
+      password: "nerveshubweb"
     })
   end
 end

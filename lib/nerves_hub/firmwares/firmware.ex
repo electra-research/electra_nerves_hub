@@ -3,12 +3,11 @@ defmodule NervesHub.Firmwares.Firmware do
 
   import Ecto.Changeset
 
+  alias __MODULE__
   alias NervesHub.Accounts.Org
   alias NervesHub.Accounts.OrgKey
-  alias NervesHub.ManagedDeployments.DeploymentGroup
+  alias NervesHub.ManagedDeployments.DeploymentRelease
   alias NervesHub.Products.Product
-
-  alias __MODULE__
 
   @type t :: %Firmware{
           architecture: String.t(),
@@ -37,6 +36,10 @@ defmodule NervesHub.Firmwares.Firmware do
     :platform,
     :product_id,
     :size,
+    :tool,
+    :tool_delta_required_version,
+    :tool_full_required_version,
+    :tool_metadata,
     :upload_metadata,
     :uuid,
     :version
@@ -47,7 +50,8 @@ defmodule NervesHub.Firmwares.Firmware do
     belongs_to(:org, Org, where: [deleted_at: nil])
     belongs_to(:product, Product, where: [deleted_at: nil])
     belongs_to(:org_key, OrgKey)
-    has_many(:deployment_groups, DeploymentGroup)
+
+    has_many(:deployment_releases, DeploymentRelease)
 
     field(:architecture, :string)
     field(:author, :string)
@@ -56,6 +60,15 @@ defmodule NervesHub.Firmwares.Firmware do
     field(:misc, :string)
     field(:platform, :string)
     field(:size, :integer)
+    field(:tool, :string, default: "fwup")
+    # Which version of the tool is required for delta updates
+    field(:tool_delta_required_version, :string)
+    # Which version of the tool is required for full updates
+    field(:tool_full_required_version, :string)
+    # Other values that the tool usage might care about
+    # that don't seem likely to be the same between different firmware update tools
+    field(:tool_metadata, :map)
+
     field(:upload_metadata, :map)
     field(:uuid, :string)
     field(:vcs_identifier, :string)
@@ -82,9 +95,9 @@ defmodule NervesHub.Firmwares.Firmware do
     |> foreign_key_constraint(:deployment_groups, name: :deployment_groups_firmware_id_fkey)
   end
 
-  def delete_changeset(%Firmware{} = firmware, params) do
+  def delete_changeset(%Firmware{} = firmware) do
     firmware
-    |> cast(params, @required_params ++ @optional_params)
-    |> no_assoc_constraint(:deployment_groups, message: "Firmware has associated deployments")
+    |> change()
+    |> no_assoc_constraint(:deployment_releases, message: "Firmware has associated deployment releases")
   end
 end

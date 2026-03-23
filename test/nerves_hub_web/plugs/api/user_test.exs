@@ -1,6 +1,6 @@
 defmodule NervesHubWeb.API.Plugs.UserTest do
-  use ExUnit.Case, async: false
   use NervesHubWeb.APIConnCase
+  use ExUnit.Case, async: true
 
   alias NervesHub.Accounts
   alias NervesHub.Repo
@@ -73,6 +73,22 @@ defmodule NervesHubWeb.API.Plugs.UserTest do
     assert_raise(NervesHubWeb.UnauthorizedError, fn ->
       build_conn()
       |> put_req_header("authorization", "token nhu_1234567890abcdefghijklmnopqrstuvwxyz")
+      |> put_req_header("accept", "application/json")
+      |> get("/api/users/me")
+    end)
+  end
+
+  test "rejects improperly formatted API token" do
+    assert_raise(NervesHubWeb.UnauthorizedError, fn ->
+      build_conn()
+      |> put_req_header("authorization", "asdf")
+      |> put_req_header("accept", "application/json")
+      |> get("/api/users/me")
+    end)
+
+    assert_raise(NervesHubWeb.UnauthorizedError, fn ->
+      build_conn()
+      |> put_req_header("authorization", "token")
       |> put_req_header("accept", "application/json")
       |> get("/api/users/me")
     end)

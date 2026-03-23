@@ -4,6 +4,7 @@ defmodule NervesHubWeb.UserSocket do
   alias NervesHub.Accounts
 
   channel("user:console:*", NervesHubWeb.UserConsoleChannel)
+  channel("user:local_shell:*", NervesHubWeb.UserLocalShellChannel)
 
   def connect(%{"token" => token}, socket) do
     case Phoenix.Token.verify(socket, "user salt", token, max_age: 86_400) do
@@ -20,6 +21,10 @@ defmodule NervesHubWeb.UserSocket do
       {:error, _} ->
         :error
     end
+  end
+
+  def connect(_, _socket) do
+    :error
   end
 
   def id(%{assigns: %{user: user}}) do

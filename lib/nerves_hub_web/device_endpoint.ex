@@ -7,6 +7,10 @@ defmodule NervesHubWeb.DeviceEndpoint do
   # both `/socket` and `/device-socket` are supported for compatibility
   # with the web endpoint, where `/socket` is used by the `UserSocket`
 
+  alias NervesHubWeb.Channels.DeviceJSONSerializer
+  alias NervesHubWeb.Plugs.DeviceEndpointRedirect
+  alias NervesHubWeb.Plugs.ImAlive
+
   socket(
     "/socket",
     NervesHubWeb.DeviceSocket,
@@ -15,7 +19,8 @@ defmodule NervesHubWeb.DeviceEndpoint do
       compress: true,
       timeout: 180_000,
       fullsweep_after: 0,
-      error_handler: {WebsocketConnectionError, :handle_error, []}
+      error_handler: {WebsocketConnectionError, :handle_error, []},
+      serializer: [{DeviceJSONSerializer, "~> 2.0.0"}]
     ],
     drainer: {NervesHubWeb.DeviceSocket, :drainer_configuration, []}
   )
@@ -28,14 +33,15 @@ defmodule NervesHubWeb.DeviceEndpoint do
       compress: true,
       timeout: 180_000,
       fullsweep_after: 0,
-      error_handler: {WebsocketConnectionError, :handle_error, []}
+      error_handler: {WebsocketConnectionError, :handle_error, []},
+      serializer: [{DeviceJSONSerializer, "~> 2.0.0"}]
     ],
     drainer: {NervesHubWeb.DeviceSocket, :drainer_configuration, []}
   )
 
-  plug(NervesHubWeb.Plugs.ImAlive)
+  plug(ImAlive)
 
   plug(Sentry.PlugContext)
 
-  plug(NervesHubWeb.Plugs.DeviceEndpointRedirect)
+  plug(DeviceEndpointRedirect)
 end

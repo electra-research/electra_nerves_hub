@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.NervesHub.Gen.Devices do
+  @shortdoc "Generate a collection of devices"
+
   @moduledoc """
   Generate a collection of devices for an Organization and Product.
 
@@ -6,8 +8,6 @@ defmodule Mix.Tasks.NervesHub.Gen.Devices do
 
       mix nerves_hub.gen.devices my-org my-product 1000
   """
-
-  @shortdoc "Generate a collection of devices"
 
   use Mix.Task
 
@@ -47,8 +47,8 @@ defmodule Mix.Tasks.NervesHub.Gen.Devices do
 
       %DeviceConnection{
         device_id: device.id,
-        established_at: DateTime.utc_now(:millisecond),
-        last_seen_at: DateTime.utc_now(:millisecond),
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
         metadata: %{
           "location" => %{
             "longitude" => lng,

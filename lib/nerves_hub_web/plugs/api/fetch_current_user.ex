@@ -1,0 +1,39 @@
+defmodule NervesHubWeb.API.Plugs.FetchCurrentUser do
+  import Plug.Conn
+
+  alias NervesHub.Accounts
+  alias NervesHub.Accounts.Scope
+
+  def init(opts) do
+    opts
+  end
+
+  def call(conn, _opts) do
+    with {:ok, token} <- get_req_token(conn),
+         {:ok, user, user_token} <- Accounts.fetch_user_by_api_token(token),
+         :ok <- Accounts.mark_last_used(user_token) do
+      assign(conn, :current_scope, Scope.for_user(user))
+    else
+      _ ->
+        assign(conn, :current_scope, Scope.for_user(nil))
+    end
+  end
+
+  defp get_req_token(conn) do
+    with [header] <- get_req_header(conn, "authorization"),
+         {scheme, token} <- get_scheme_and_token(header),
+         true <- String.downcase(scheme) in ["token", "bearer"] do
+      {:ok, token}
+    end
+  end
+
+  defp get_scheme_and_token(header) do
+    case String.split(header, " ") do
+      [scheme, token | _] ->
+        {scheme, token}
+
+      _ ->
+        :invalid_token_format
+    end
+  end
+end

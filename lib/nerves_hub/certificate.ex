@@ -8,6 +8,8 @@ defmodule NervesHub.Certificate do
       attribute_type_and_value: 1
     ]
 
+  alias X509.Certificate.Extension
+
   @era 2000
 
   defdelegate from_pem(pem), to: X509.Certificate
@@ -17,7 +19,7 @@ defmodule NervesHub.Certificate do
   def get_aki(otp_certificate) do
     otp_certificate
     |> X509.Certificate.extensions()
-    |> X509.Certificate.Extension.find(:authority_key_identifier)
+    |> Extension.find(:authority_key_identifier)
     |> extension()
     |> Keyword.get(:extnValue)
     |> authority_key_identifier()
@@ -27,7 +29,7 @@ defmodule NervesHub.Certificate do
   def get_ski(otp_certificate) do
     otp_certificate
     |> X509.Certificate.extensions()
-    |> X509.Certificate.Extension.find(:subject_key_identifier)
+    |> Extension.find(:subject_key_identifier)
     |> case do
       nil ->
         nil
@@ -55,13 +57,13 @@ defmodule NervesHub.Certificate do
       common_name ->
         Keyword.get(common_name, :value)
         |> elem(1)
-        |> to_string
+        |> to_string()
     end
   end
 
   def get_serial_number(otp_certificate) do
     X509.Certificate.serial(otp_certificate)
-    |> to_string
+    |> to_string()
   end
 
   def get_validity(otp_certificate) do
@@ -112,8 +114,7 @@ defmodule NervesHub.Certificate do
 
   defp convert_timestamp({:utcTime, timestamp}) do
     <<year::binary-unit(8)-size(2), month::binary-unit(8)-size(2), day::binary-unit(8)-size(2),
-      hour::binary-unit(8)-size(2), minute::binary-unit(8)-size(2),
-      second::binary-unit(8)-size(2), "Z">> = timestamp
+      hour::binary-unit(8)-size(2), minute::binary-unit(8)-size(2), second::binary-unit(8)-size(2), "Z">> = timestamp
 
     NaiveDateTime.new(
       String.to_integer(year) + @era,
@@ -134,8 +135,7 @@ defmodule NervesHub.Certificate do
 
   defp convert_timestamp({:generalTime, timestamp}) do
     <<year::binary-unit(8)-size(4), month::binary-unit(8)-size(2), day::binary-unit(8)-size(2),
-      hour::binary-unit(8)-size(2), minute::binary-unit(8)-size(2),
-      second::binary-unit(8)-size(2), "Z">> = timestamp
+      hour::binary-unit(8)-size(2), minute::binary-unit(8)-size(2), second::binary-unit(8)-size(2), "Z">> = timestamp
 
     NaiveDateTime.new(
       String.to_integer(year),

@@ -1,5 +1,13 @@
 import Config
 
+alias NervesHub.Firmwares.Upload
+alias NervesHub.Firmwares.Upload.S3
+alias NervesHub.Telemetry.FilteredSampler
+alias Sentry.OpenTelemetry.Sampler
+alias Sentry.OpenTelemetry.SpanProcessor
+alias Swoosh.Adapters.SMTP
+alias Ueberauth.Strategy.Google.OAuth
+
 nerves_hub_app = System.get_env("NERVES_HUB_APP", "all")
 
 if !Enum.member?(["all", "web", "device"], nerves_hub_app) do
@@ -8,6 +16,11 @@ if !Enum.member?(["all", "web", "device"], nerves_hub_app) do
   supported values are \"all\", \"web\", and \"device\"
   """
 end
+
+config :nerves_hub, :device_socket_drainer,
+  batch_size: String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_BATCH_SIZE", "1000")),
+  batch_interval: String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_BATCH_INTERVAL", "4000")),
+  shutdown: String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_SHUTDOWN", "30000"))
 
 config :nerves_hub,
   app: nerves_hub_app,
@@ -19,22 +32,17 @@ config :nerves_hub,
   support_email_platform_name: System.get_env("SUPPORT_EMAIL_PLATFORM_NAME", "NervesHub"),
   support_email_address: System.get_env("SUPPORT_EMAIL_ADDRESS"),
   support_email_signoff: System.get_env("SUPPORT_EMAIL_SIGNOFF"),
-  device_endpoint_redirect:
-    System.get_env("DEVICE_ENDPOINT_REDIRECT", "https://docs.nerves-hub.org/"),
-  device_health_days_to_retain:
-    String.to_integer(System.get_env("HEALTH_CHECK_DAYS_TO_RETAIN", "7")),
-  device_health_delete_limit:
-    String.to_integer(System.get_env("DEVICE_HEALTH_DELETE_LIMIT", "100000")),
+  device_endpoint_redirect: System.get_env("DEVICE_ENDPOINT_REDIRECT", "https://docs.nerves-hub.org/"),
+  device_health_days_to_retain: String.to_integer(System.get_env("HEALTH_CHECK_DAYS_TO_RETAIN", "7")),
+  device_health_delete_limit: String.to_integer(System.get_env("DEVICE_HEALTH_DELETE_LIMIT", "100000")),
   device_deployment_change_jitter_seconds:
     String.to_integer(System.get_env("DEVICE_DEPLOYMENT_CHANGE_JITTER_SECONDS", "10")),
   device_last_seen_update_interval_minutes:
     String.to_integer(System.get_env("DEVICE_LAST_SEEN_UPDATE_INTERVAL_MINUTES", "15")),
   device_last_seen_update_interval_jitter_seconds:
     String.to_integer(System.get_env("DEVICE_LAST_SEEN_UPDATE_INTERVAL_JITTER_SECONDS", "300")),
-  device_connection_max_age_days:
-    String.to_integer(System.get_env("DEVICE_CONNECTION_MAX_AGE_DAYS", "14")),
-  device_connection_delete_limit:
-    String.to_integer(System.get_env("DEVICE_CONNECTION_DELETE_LIMIT", "100000")),
+  device_connection_max_age_days: String.to_integer(System.get_env("DEVICE_CONNECTION_MAX_AGE_DAYS", "14")),
+  device_connection_delete_limit: String.to_integer(System.get_env("DEVICE_CONNECTION_DELETE_LIMIT", "100000")),
   deployment_calculator_interval_seconds:
     String.to_integer(System.get_env("DEPLOYMENT_CALCULATOR_INTERVAL_SECONDS", "3600")),
   mapbox_access_token: System.get_env("MAPBOX_ACCESS_TOKEN"),
@@ -42,38 +50,36 @@ config :nerves_hub,
   extension_config: [
     geo: [
       # No interval, fetch geo on device connection by default
-      interval_minutes:
-        System.get_env("FEATURES_GEO_INTERVAL_MINUTES", "0") |> String.to_integer()
+      interval_minutes: System.get_env("FEATURES_GEO_INTERVAL_MINUTES", "0") |> String.to_integer()
     ],
     health: [
-      interval_minutes:
-        System.get_env("FEATURES_HEALTH_INTERVAL_MINUTES", "60") |> String.to_integer(),
-      ui_polling_seconds:
-        System.get_env("FEATURES_HEALTH_UI_POLLING_SECONDS", "60") |> String.to_integer()
+      interval_minutes: System.get_env("FEATURES_HEALTH_INTERVAL_MINUTES", "60") |> String.to_integer(),
+      ui_polling_seconds: System.get_env("FEATURES_HEALTH_UI_POLLING_SECONDS", "60") |> String.to_integer()
+    ],
+    logging: [
+      days_to_keep: String.to_integer(System.get_env("EXTENSIONS_LOGGING_DAYS_TO_KEEP", "3"))
     ]
   ],
-  new_ui: System.get_env("NEW_UI_ENABLED", "true") == "true"
-
-config :nerves_hub, :device_socket_drainer,
-  batch_size: String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_BATCH_SIZE", "1000")),
-  batch_interval:
-    String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_BATCH_INTERVAL", "4000")),
-  shutdown: String.to_integer(System.get_env("DEVICE_SOCKET_DRAINER_SHUTDOWN", "30000"))
+  logger_exclusions: System.get_env("LOGGER_EXCLUSIONS", "") |> String.split(","),
+  devices_websocket_url:
+    System.get_env("DEVICES_WEBSOCKET_HOST") || System.get_env("DEVICE_HOST") || System.get_env("WEB_HOST") ||
+      System.get_env("HOST"),
+  clean_up_soft_deleted_devices: System.get_env("CLEAN_UP_SOFT_DELETED_DEVICES", "false") == "true"
 
 # only set this in :prod as not to override the :dev config
 if config_env() == :prod do
-  config :nerves_hub,
-    open_for_registrations: System.get_env("OPEN_FOR_REGISTRATIONS", "false") == "true"
+  config :logfmt_ex, :opts,
+    message_key: "msg",
+    timestamp_key: "ts",
+    timestamp_format: :iso8601
 
   # Configures Elixir's Logger
   config :logger, :default_formatter,
     format: {NervesHub.Logger, :format},
     metadata: :all
 
-  config :logfmt_ex, :opts,
-    message_key: "msg",
-    timestamp_key: "ts",
-    timestamp_format: :iso8601
+  config :nerves_hub,
+    open_for_registrations: System.get_env("OPEN_FOR_REGISTRATIONS", "false") == "true"
 end
 
 if level = System.get_env("LOG_LEVEL") do
@@ -250,52 +256,26 @@ if config_env() == :prod do
     socket_options: database_socket_options,
     queue_target: 5000
 
-  oban_pool_size =
-    System.get_env("OBAN_DATABASE_POOL_SIZE") || System.get_env("DATABASE_POOL_SIZE", "20")
-
-  config :nerves_hub, NervesHub.ObanRepo,
-    url: System.fetch_env!("DATABASE_URL"),
-    ssl: database_ssl_opts,
-    pool_size: String.to_integer(oban_pool_size),
-    socket_options: database_socket_options,
-    queue_target: 5000
-
   config :nerves_hub,
     database_auto_migrator: System.get_env("DATABASE_AUTO_MIGRATOR", "true") == "true"
 end
 
-# Libcluster is using Postgres for Node discovery
-# The library only accepts keyword configs, so the DATABASE_URL has to be
-# parsed and put together with the ssl pieces from above.
-#
-# By using the dev database url as the default it allows us to reduce the
-# libcluster config and keep it all here.
-postgres_config =
-  Ecto.Repo.Supervisor.parse_url(
-    System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost/nerves_hub_dev")
-  )
+if config_env() == :prod do
+  if clickhouse_url = System.get_env("CLICKHOUSE_URL") do
+    # Required for Clickhouse Cloud (https://github.com/plausible/analytics/discussions/3497)
+    # (using a default order will cause issues for the migration table)
+    config :ecto_ch, default_table_engine: "MergeTree"
 
-libcluster_db_config =
-  [port: 5432]
-  |> Keyword.merge(postgres_config)
-  |> Keyword.take([:hostname, :username, :password, :database, :port])
-  |> then(fn keywords ->
-    if config_env() == :prod do
-      Keyword.merge(keywords, ssl: database_ssl_opts)
-    else
-      keywords
-    end
-  end)
-  |> Keyword.merge(parameters: [])
-  |> Keyword.merge(channel_name: "nerves_hub_clustering")
+    config :nerves_hub, NervesHub.AnalyticsRepo, url: clickhouse_url
 
-config :libcluster,
-  topologies: [
-    postgres: [
-      strategy: LibclusterPostgres.Strategy,
-      config: libcluster_db_config
-    ]
-  ]
+    config :nerves_hub,
+      analytics_auto_migrator: System.get_env("ANALYTICS_AUTO_MIGRATOR", "true") == "true"
+
+    config :nerves_hub, analytics_enabled: true
+  else
+    config :nerves_hub, analytics_enabled: false
+  end
+end
 
 ##
 # Firmware upload backend.
@@ -305,14 +285,10 @@ if config_env() == :prod do
 
   case firmware_upload do
     "S3" ->
-      config :nerves_hub, firmware_upload: NervesHub.Firmwares.Upload.S3
-
       config :nerves_hub, NervesHub.Uploads, backend: NervesHub.Uploads.S3
-
       config :nerves_hub, NervesHub.Uploads.S3, bucket: System.fetch_env!("S3_BUCKET_NAME")
-
-      config :nerves_hub, NervesHub.Firmwares.Upload.S3,
-        bucket: System.fetch_env!("S3_BUCKET_NAME")
+      config :nerves_hub, S3, bucket: System.fetch_env!("S3_BUCKET_NAME")
+      config :nerves_hub, firmware_upload: S3
 
       if System.get_env("S3_ACCESS_KEY_ID") do
         config :ex_aws, :s3,
@@ -321,13 +297,13 @@ if config_env() == :prod do
       end
 
       if System.get_env("S3_BUCKET_AS_HOST", "false") == "true" do
-        config :nerves_hub, NervesHub.Firmwares.Upload.S3,
+        config :nerves_hub, S3,
           presigned_url_opts: [
             virtual_host: true,
             bucket_as_host: true
           ]
       else
-        config :nerves_hub, NervesHub.Firmwares.Upload.S3, presigned_url_opts: []
+        config :nerves_hub, S3, presigned_url_opts: []
       end
 
       config :ex_aws, :s3, bucket: System.fetch_env!("S3_BUCKET_NAME")
@@ -346,19 +322,19 @@ if config_env() == :prod do
     "local" ->
       local_path = System.get_env("FIRMWARE_UPLOAD_PATH")
 
-      config :nerves_hub, firmware_upload: NervesHub.Firmwares.Upload.File
-
-      config :nerves_hub, NervesHub.Uploads, backend: NervesHub.Uploads.File
-
       config :nerves_hub, NervesHub.Firmwares.Upload.File,
         enabled: true,
         public_path: "/firmware",
         local_path: local_path
 
+      config :nerves_hub, NervesHub.Uploads, backend: NervesHub.Uploads.File
+
       config :nerves_hub, NervesHub.Uploads.File,
         enabled: true,
         local_path: local_path,
         public_path: "/uploads"
+
+      config :nerves_hub, firmware_upload: NervesHub.Firmwares.Upload.File
 
     other ->
       raise """
@@ -368,13 +344,12 @@ if config_env() == :prod do
   end
 end
 
-# Set a default max firmware upload size of 200MB for all environments
-config :nerves_hub, NervesHub.Firmwares.Upload,
-  max_size: System.get_env("FIRMWARE_UPLOAD_MAX_SIZE", "200000000") |> String.to_integer()
-
 # Set a default max archive upload size of 200MB for all environments
 config :nerves_hub, NervesHub.Uploads,
   max_size: System.get_env("ARCHIVE_UPLOAD_MAX_SIZE", "200000000") |> String.to_integer()
+
+# Set a default max firmware upload size of 200MB for all environments
+config :nerves_hub, Upload, max_size: System.get_env("FIRMWARE_UPLOAD_MAX_SIZE", "200000000") |> String.to_integer()
 
 ##
 # SMTP settings.
@@ -383,8 +358,16 @@ if config_env() == :prod do
   config :swoosh, local: false
 
   if System.get_env("SMTP_SERVER") do
+    tls_versions =
+      System.get_env("SMTP_TLS_VERSIONS", "")
+      |> String.split(",")
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&String.to_atom/1)
+
+    tls_opts = if Enum.any?(tls_versions), do: [versions: tls_versions], else: []
+
     config :nerves_hub, NervesHub.SwooshMailer,
-      adapter: Swoosh.Adapters.SMTP,
+      adapter: SMTP,
       relay: System.fetch_env!("SMTP_SERVER"),
       port: System.fetch_env!("SMTP_PORT") |> String.to_integer(),
       username: System.fetch_env!("SMTP_USERNAME"),
@@ -392,18 +375,21 @@ if config_env() == :prod do
       auth: :always,
       ssl: System.get_env("SMTP_SSL", "false") == "true",
       tls: :always,
-      tls_options: [
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        depth: 99,
-        server_name_indication: String.to_charlist(System.get_env("SMTP_SERVER")),
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        ]
-      ],
+      tls_options:
+        [
+          verify: :verify_peer,
+          cacerts: :public_key.cacerts_get(),
+          depth: 99,
+          server_name_indication: String.to_charlist(System.get_env("SMTP_SERVER")),
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ] ++ tls_opts,
       retries: 1
   end
 end
+
+config :opentelemetry, :resource, service: %{name: nerves_hub_app}
 
 config :sentry,
   dsn: System.get_env("SENTRY_DSN_URL"),
@@ -412,6 +398,14 @@ config :sentry,
   root_source_code_path: [File.cwd!()],
   before_send: {NervesHubWeb.SentryEventFilter, :filter_non_500},
   release: "nerves_hub@#{Application.spec(:nerves_hub, :vsn)}",
+  enable_logs: System.get_env("SENTRY_ENABLE_LOGGING", "false") == "true",
+  before_send_log: fn log_event ->
+    updated_attributes = Map.put(log_event.attributes, :nerves_hub_app, nerves_hub_app)
+    %{log_event | attributes: updated_attributes}
+  end,
+  logs: [
+    metadata: :all
+  ],
   tags: %{
     app: nerves_hub_app
   },
@@ -424,25 +418,41 @@ config :sentry,
     ]
   ]
 
-config :opentelemetry, :resource, service: %{name: nerves_hub_app}
+cond do
+  System.get_env("SENTRY_ENABLE_TRACING", "false") == "true" ->
+    config :opentelemetry, sampler: {Sampler, []}
+    config :opentelemetry, span_processor: {SpanProcessor, []}
 
-if otlp_endpoint = System.get_env("OTLP_ENDPOINT") do
-  config :opentelemetry_exporter,
-    otlp_protocol: :http_protobuf,
-    otlp_endpoint: otlp_endpoint,
-    otlp_headers: [{System.get_env("OTLP_AUTH_HEADER"), System.get_env("OTLP_AUTH_HEADER_VALUE")}]
+    config :sentry,
+      traces_sampler: fn sampling_context ->
+        if sampling_context.transaction_context.name in [
+             "nerves_hub.repo.query:oban_jobs",
+             "nerves_hub.repo.query:oban_peers"
+           ] do
+          0.01
+        else
+          rate = System.get_env("SENTRY_TRACING_RATE", "0.05")
+          {parsed, _} = Float.parse(rate)
+          parsed
+        end
+      end
 
-  otlp_sampler_ratio =
-    if ratio = System.get_env("OTLP_SAMPLER_RATIO") do
-      String.to_float(ratio)
-    else
-      nil
-    end
+  otlp_endpoint = System.get_env("OTLP_ENDPOINT") ->
+    otlp_sampler_ratio =
+      if ratio = System.get_env("OTLP_SAMPLER_RATIO") do
+        String.to_float(ratio)
+      end
 
-  config :opentelemetry,
-    sampler: {:parent_based, %{root: {NervesHub.Telemetry.FilteredSampler, otlp_sampler_ratio}}}
-else
-  config :opentelemetry, traces_exporter: :none
+    config :opentelemetry,
+      sampler: {:parent_based, %{root: {FilteredSampler, otlp_sampler_ratio}}}
+
+    config :opentelemetry_exporter,
+      otlp_protocol: :http_protobuf,
+      otlp_endpoint: otlp_endpoint,
+      otlp_headers: [{System.get_env("OTLP_AUTH_HEADER"), System.get_env("OTLP_AUTH_HEADER_VALUE")}]
+
+  true ->
+    config :opentelemetry, traces_exporter: :none
 end
 
 if host = System.get_env("STATSD_HOST") do
@@ -451,19 +461,18 @@ if host = System.get_env("STATSD_HOST") do
     port: String.to_integer(System.get_env("STATSD_PORT", "8125"))
 end
 
-config :nerves_hub, :audit_logs,
-  enabled: System.get_env("TRUNCATE_AUDIT_LOGS_ENABLED", "false") == "true",
-  default_days_kept:
-    String.to_integer(System.get_env("TRUNCATE_AUDIT_LOGS_DEFAULT_DAYS_KEPT", "30"))
-
 config :nerves_hub, NervesHub.RateLimit,
   limit: System.get_env("DEVICE_CONNECT_RATE_LIMIT", "100") |> String.to_integer()
+
+config :nerves_hub, :audit_logs,
+  enabled: System.get_env("TRUNCATE_AUDIT_LOGS_ENABLED", "false") == "true",
+  default_days_kept: String.to_integer(System.get_env("TRUNCATE_AUDIT_LOGS_DEFAULT_DAYS_KEPT", "30"))
 
 config :nerves_hub,
   enable_google_auth: !is_nil(System.get_env("GOOGLE_CLIENT_ID"))
 
 if System.get_env("GOOGLE_CLIENT_ID") do
-  config :ueberauth, Ueberauth.Strategy.Google.OAuth,
+  config :ueberauth, OAuth,
     client_id: System.get_env("GOOGLE_CLIENT_ID"),
     client_secret: System.get_env("GOOGLE_CLIENT_SECRET")
 end

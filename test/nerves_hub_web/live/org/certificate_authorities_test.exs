@@ -110,8 +110,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthoritiesTest do
       |> click_button("Create Certificate")
       |> assert_path("/org/#{org.name}/settings/certificates/new")
       |> assert_has("div",
-        text:
-          "Error validating certificate signing request. Please check if the right registration code was used."
+        text: "Error validating certificate signing request. Please check if the right registration code was used."
       )
 
       assert [] = Devices.get_ca_certificates(org)
@@ -144,10 +143,10 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthoritiesTest do
         upload_file(view, "verificationCert.crt", verification_cert_crt, :csr)
       end)
       |> fill_in("Description", with: description)
-      |> check("Enable Just In Time Provisioning")
-      |> fill_in("JITP Description", with: "a jitp description")
-      |> fill_in("JITP Tags", with: "prod")
-      |> select("JITP Product", option: product.name)
+      |> check("Enable Just In Time Provisioning", exact: false)
+      |> fill_in("JITP Description", with: "a jitp description", exact: false)
+      |> fill_in("JITP Tags", with: "prod", exact: false)
+      |> select("JITP Product", option: product.name, exact: false)
       |> click_button("Create Certificate")
       |> assert_path("/org/#{org.name}/settings/certificates")
       |> assert_has("div", text: "Certificate Authority created")
@@ -175,7 +174,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthoritiesTest do
       |> visit("/org/#{org.name}/settings/certificates")
       |> assert_has("h1", text: "Certificate Authorities")
       |> assert_has("code", text: Utils.format_serial(ca.serial))
-      |> click_link("Delete")
+      |> click_button("Delete")
       |> assert_has("div", text: "Certificate successfully deleted")
       |> refute_has("code", text: Utils.format_serial(ca.serial))
 
@@ -207,9 +206,9 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthoritiesTest do
       |> visit("/org/#{org.name}/settings/certificates/#{serial}/edit")
       |> assert_has("h1", text: "Edit Certificate Authority")
       |> check("Enable Just In Time Provisioning")
-      |> fill_in("JITP Description", with: "")
-      |> fill_in("JITP Tags", with: "prod")
-      |> select("JITP Product", option: product.name)
+      |> fill_in("JITP Description", with: "", exact: false)
+      |> fill_in("JITP Tags", with: "prod", exact: false)
+      |> select("JITP Product", option: product.name, exact: false)
       |> click_button("Update Certificate")
       |> assert_path("/org/#{org.name}/settings/certificates/#{serial}/edit")
       |> assert_has("div", text: "Error updating certificate")

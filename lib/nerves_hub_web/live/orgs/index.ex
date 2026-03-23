@@ -1,41 +1,83 @@
 defmodule NervesHubWeb.Live.Orgs.Index do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
+  alias NervesHub.Accounts
   alias NervesHub.Devices
+  alias NervesHub.Devices.Connections
+  alias NervesHub.Products
   alias NervesHub.Tracker
   alias NervesHubWeb.Components.PinnedDevices
-
-  alias Number.Delimit
   alias Phoenix.Socket.Broadcast
 
   @pinned_devices_limit 5
 
-  def mount(_params, _session, %{assigns: %{user: user}} = socket) do
-    pinned_devices = Devices.get_pinned_devices(user.id)
+  @impl Phoenix.LiveView
+  def mount(_params, _session, %{assigns: %{current_scope: scope}} = socket) do
+    pinned_devices = Devices.get_pinned_devices(scope)
 
     statuses =
-      Enum.into(pinned_devices, %{}, fn device ->
+      Map.new(pinned_devices, fn device ->
         {device.identifier, Tracker.connection_status(device)}
       end)
 
-    socket
-    |> assign(:page_title, "Organizations")
-    |> assign(:show_all_pinned?, false)
-    |> assign(:pinned_devices, Devices.get_pinned_devices(user.id))
-    |> assign(:device_statuses, statuses)
-    |> assign(:device_limit, @pinned_devices_limit)
-    |> subscribe()
-    |> ok()
+    socket =
+      socket
+      |> assign(:page_title, "Organizations")
+      |> assign(:show_all_pinned?, false)
+      |> assign(:device_info, %{})
+      |> assign(:product_device_info, %{})
+      |> assign(:pinned_devices, pinned_devices)
+      |> assign(:device_statuses, statuses)
+      |> assign(:device_limit, @pinned_devices_limit)
+      |> maybe_assign_onboarding()
+      |> subscribe()
+
+    if connected?(socket), do: send(self(), :load_extras)
+    {:ok, socket}
   end
 
-  def handle_event(
-        "toggle-expand-devices",
-        _,
-        %{assigns: %{show_all_pinned?: show_all?}} = socket
-      ) do
+  @impl Phoenix.LiveView
+  def handle_event("toggle-expand-devices", _, %{assigns: %{show_all_pinned?: show_all?}} = socket) do
     socket
     |> assign(:show_all_pinned?, !show_all?)
     |> noreply()
+  end
+
+  def handle_event("save_onboarding", %{"org_name" => org_name, "product_name" => product_name}, socket) do
+    user = socket.assigns.current_scope.user
+
+    with {:ok, org} <- Accounts.create_org(user, %{name: org_name}),
+         {:ok, product} <- Products.create_product(%{name: product_name, org_id: org.id}),
+         {:ok, _shared_secret} <- Products.create_shared_secret_auth(product) do
+      socket
+      |> push_navigate(to: ~p"/org/#{org.name}/#{product.name}/devices")
+      |> noreply()
+    else
+      {:error, %Ecto.Changeset{} = changeset} ->
+        socket
+        |> assign(:onboarding_error, changeset_error_message(changeset))
+        |> noreply()
+    end
+  end
+
+  @impl Phoenix.LiveView
+  def handle_info(:load_extras, socket) do
+    org_statuses =
+      socket.assigns.current_scope.user.orgs
+      |> Enum.map(& &1.id)
+      |> Connections.get_connection_status_by_orgs()
+
+    product_ids =
+      socket.assigns.current_scope.user.orgs
+      |> Enum.flat_map(& &1.products)
+      |> Enum.map(& &1.id)
+
+    product_statuses = Connections.get_connection_status_by_products(product_ids)
+
+    {:noreply,
+     socket
+     |> assign(:device_info, org_statuses)
+     |> assign(:product_device_info, product_statuses)}
   end
 
   def handle_info(%Broadcast{event: "connection:status", payload: payload}, socket) do
@@ -74,9 +116,28 @@ defmodule NervesHubWeb.Live.Orgs.Index do
     limited_devices
   end
 
-  defp format_device_count(nil), do: 0
+  defp maybe_assign_onboarding(%{assigns: %{current_scope: scope}} = socket) do
+    if scope.user.orgs == [] do
+      {org_name, product_name} = Accounts.generate_onboarding_names(scope.user.name)
 
-  defp format_device_count(count) do
-    Delimit.number_to_delimited(count, precision: 0)
+      socket
+      |> assign(:onboarding, true)
+      |> assign(:org_name, org_name)
+      |> assign(:product_name, product_name)
+      |> assign(:onboarding_error, nil)
+    else
+      assign(socket, :onboarding, false)
+    end
+  end
+
+  defp changeset_error_message(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Enum.map_join(", ", fn {field, errors} ->
+      "#{field} #{Enum.join(errors, ", ")}"
+    end)
   end
 end

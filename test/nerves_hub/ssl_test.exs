@@ -1,9 +1,12 @@
 defmodule NervesHub.SSLTest do
   use NervesHub.DataCase, async: true
 
+  alias NervesHub.Accounts.Scope
   alias NervesHub.Certificate
   alias NervesHub.Devices
+  alias NervesHub.Devices.CACertificate.JITP
   alias NervesHub.Fixtures
+  alias X509.Certificate.Validity
 
   require X509.ASN1
 
@@ -78,7 +81,7 @@ defmodule NervesHub.SSLTest do
 
       # Enable JITP
       jitp =
-        %Devices.CACertificate.JITP{
+        %JITP{
           product_id: product.id,
           tags: ["hello", "jitp"],
           description: "jitp"
@@ -90,9 +93,14 @@ defmodule NervesHub.SSLTest do
       |> Ecto.Changeset.change(%{jitp_id: jitp.id})
       |> NervesHub.Repo.update!()
 
-      assert Devices.get_device_by_identifier(org, identifier) == {:error, :not_found}
+      scope = Scope.for_user(user) |> Scope.put_org(org)
+
+      assert Devices.get_by_identifier(scope, identifier) == {:error, :not_found}
       assert {:valid, _state} = run_verify(otp_cert, {:bad_cert, :unknown_ca})
-      assert {:ok, device} = Devices.get_device_by_identifier(org, identifier)
+
+      scope = Scope.for_user(user) |> Scope.put_org(org)
+
+      assert {:ok, device} = Devices.get_by_identifier(scope, identifier)
       assert device.identifier == identifier
       assert device.description == "jitp"
       assert device.product_id == product.id
@@ -293,7 +301,7 @@ defmodule NervesHub.SSLTest do
     test "rejects deleted device with JITP profile", context do
       # Add JITP profile to CA db cert
       jitp =
-        %Devices.CACertificate.JITP{
+        %JITP{
           product_id: context.product.id,
           tags: ["hello", "jitp"],
           description: "jitp"
@@ -388,7 +396,7 @@ defmodule NervesHub.SSLTest do
   defp do_corruption(cert, :expired) do
     {:ok, not_before, 0} = DateTime.from_iso8601("2018-01-01T00:00:00Z")
     {:ok, not_after, 0} = DateTime.from_iso8601("2018-12-31T23:59:59Z")
-    new_validity = X509.Certificate.Validity.new(not_before, not_after)
+    new_validity = Validity.new(not_before, not_after)
 
     tbs_cert = X509.ASN1.otp_certificate(cert, :tbsCertificate)
     new_tbs_cert = X509.ASN1.tbs_certificate(tbs_cert, validity: new_validity)

@@ -1,26 +1,18 @@
 defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
   use NervesHubWeb, :live_component
 
-  alias NervesHub.Archives
   alias NervesHub.AuditLogs
   alias NervesHub.AuditLogs.DeploymentGroupTemplates
-  alias NervesHub.Firmwares
-  alias NervesHub.Firmwares.Firmware
   alias NervesHub.ManagedDeployments
   alias NervesHub.ManagedDeployments.DeploymentGroup
+  alias NervesHubWeb.Components.Utils
 
   @impl Phoenix.LiveComponent
   def update(assigns, socket) do
-    archives = Archives.all_by_product(assigns.deployment_group.product)
-    firmwares = Firmwares.get_firmwares_for_deployment_group(assigns.deployment_group)
-
-    changeset = DeploymentGroup.changeset(assigns.deployment_group, %{})
+    changeset = DeploymentGroup.update_changeset(assigns.deployment_group, %{})
 
     socket
     |> assign(assigns)
-    |> assign(:archives, archives)
-    |> assign(:firmware, assigns.deployment_group.firmware)
-    |> assign(:firmwares, firmwares)
     |> assign(:form, to_form(changeset))
     |> ok()
   end
@@ -29,73 +21,72 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
   def render(assigns) do
     ~H"""
     <div class="flex flex-col items-start justify-between gap-4 p-6">
-      <.form for={@form} class="w-full flex flex-col gap-4" phx-submit="update-deployment-group" phx-target={@myself}>
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
+      <.form id="deployment-form" for={@form} class="w-full flex flex-col gap-4" phx-change="validate-deployment-group" phx-submit="update-deployment-group" phx-target={@myself}>
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
             <div class="text-base text-neutral-50 font-medium">General settings</div>
           </div>
 
           <div class="flex p-6 gap-6">
             <div class="w-1/2 flex flex-col gap-6">
-              <.input field={@form[:name]} label="Name" placeholder="Production" />
+              <.input field={@form[:name]} label="Name" placeholder="Production" phx-debounce="blur" />
+              <.input field={@form[:delta_updatable]} type="checkbox" label="Delta updates">
+                <:rich_hint>
+                  When enabled, the deployment group will only send delta updates.
+                  Check out the <.link class="underline" href="https://docs.nerves-hub.org/nerves-hub/setup/firmware#delta-updates" target="_blank">NervesHub documentation</.link>
+                  for more information on delta updates.
+                </:rich_hint>
+              </.input>
             </div>
           </div>
         </div>
 
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
-            <div class="text-base text-neutral-50 font-medium">Release settings</div>
-          </div>
-
-          <div class="flex flex-col p-6 gap-6">
-            <div class="w-1/2 flex flex-col gap-6">
-              <.input
-                field={@form[:firmware_id]}
-                type="select"
-                options={firmware_dropdown_options(@firmwares)}
-                label="Firmware version"
-                hint="Firmware listed is the same platform and architecture as the currently selected firmware."
-              />
-            </div>
-
-            <div class="w-1/2 flex flex-col gap-6">
-              <.input
-                field={@form[:archive_id]}
-                type="select"
-                options={archive_dropdown_options(@archives)}
-                prompt="Select an Archive"
-                label="Additional Archive version"
-                hint="Firmware listed is the same platform and architecture as the currently selected firmware."
-              />
-            </div>
-          </div>
-        </div>
-
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
             <div class="text-base text-neutral-50 font-medium">Device matching conditions</div>
           </div>
 
           <div class="flex flex-col p-6 gap-6">
             <div class="flex flex-col gap-3">
-              <p class="text-sm text-zinc-400 w-2/3">
+              <p class="text-sm text-base-400 w-2/3">
                 These conditions are used for matching devices which don't have a configured deployment group.
               </p>
-              <p class="text-sm text-zinc-400 w-2/3">
+              <p class="text-sm text-base-400 w-2/3">
                 The matching is undertaken when a device connects to the platform.
               </p>
             </div>
+            <.inputs_for :let={conditions} field={@form[:conditions]}>
+              <div class="w-1/2">
+                <.input field={conditions[:tags]} value={Utils.tags_to_string(conditions[:tags])} label="Tag(s) distributed to" placeholder="eg. batch-123" />
+              </div>
+
+              <div class="w-1/2">
+                <.input field={conditions[:version]} label="Version requirement" placeholder="eg. 1.2.3" />
+              </div>
+            </.inputs_for>
+          </div>
+        </div>
+
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
+            <div class="text-base text-neutral-50 font-medium">Device queue settings</div>
+          </div>
+
+          <div class="flex flex-col p-6 gap-6">
             <div class="w-1/2">
-              <.input field={@form[:tags]} value={tags_to_string(@form[:conditions])} label="Tag(s) distributed to" placeholder="eg. batch-123" />
-            </div>
-            <div class="w-1/2">
-              <.input field={@form[:version]} value={@form[:conditions].value["version"]} label="Version requirement" placeholder="eg. 1.2.3" />
+              <.input
+                field={@form[:queue_management]}
+                type="select"
+                options={[[value: "FIFO", key: "FIFO"], [value: "LIFO", key: "LIFO"]]}
+                label="Queue management"
+                hint="FIFO (First-In, First-Out) prioritizes devices that have been connected the longest for updates, while LIFO (Last-In, First-Out) prioritizes the most recently connected devices."
+              />
             </div>
           </div>
         </div>
 
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
             <div class="text-base text-neutral-50 font-medium">Rolling updates</div>
           </div>
 
@@ -118,56 +109,62 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
               />
             </div>
           </div>
+        </div>
 
-          <div class="flex flex-col p-6 gap-8 border-t border-zinc-700">
-            <div class="flex gap-6">
-              <div class="w-1/2">
-                <div phx-feedback-for={@form[:failure_rate].name}>
-                  <span class="flex items-end">
-                    <.core_label for={@form[:failure_rate_amount].id}>Failure rate</.core_label>
-                  </span>
-                  <div class="flex items-center gap-2">
-                    <input
-                      type="number"
-                      name={@form[:failure_rate_amount].name}
-                      id={@form[:failure_rate_amount].id}
-                      value={Phoenix.HTML.Form.normalize_value("number", @form[:failure_rate_amount].value)}
-                      class={[
-                        "mt-2 py-1.5 px-2 block w-20 rounded text-zinc-400 bg-zinc-900 focus:ring-0 sm:text-sm",
-                        "phx-no-feedback:border-zinc-600 phx-no-feedback:focus:border-zinc-700",
-                        @form[:failure_rate_amount].errors == [] && "border-zinc-600 focus:border-zinc-700",
-                        @form[:failure_rate_amount].errors != [] && "border-red-500 focus:border-red-500"
-                      ]}
-                    />
-                    <div class="text-sm mt-2">devices per</div>
-                    <input
-                      type="number"
-                      name={@form[:failure_rate_seconds].name}
-                      id={@form[:failure_rate_seconds].id}
-                      value={Phoenix.HTML.Form.normalize_value("number", @form[:failure_rate_seconds].value)}
-                      class={[
-                        "mt-2 py-1.5 px-2 block w-20 rounded text-zinc-400 bg-zinc-900 focus:ring-0 sm:text-sm",
-                        "phx-no-feedback:border-zinc-600 phx-no-feedback:focus:border-zinc-700",
-                        @form[:failure_rate_seconds].errors == [] && "border-zinc-600 focus:border-zinc-700",
-                        @form[:failure_rate_seconds].errors != [] && "border-red-500 focus:border-red-500"
-                      ]}
-                    />
-                    <div class="text-sm mt-2">sec</div>
-                  </div>
-                  <div class="flex flex-col gap-1 text-xs text-zinc-400 pt-1">
-                    {help_message_for(:failure_rate)}
-                  </div>
-                  <NervesHubWeb.CoreComponents.error :for={msg <- Enum.map(@form[:failure_rate_amount].errors ++ @form[:failure_rate_seconds].errors, &NervesHubWeb.CoreComponents.translate_error(&1))}>
-                    {msg}
-                  </NervesHubWeb.CoreComponents.error>
-                </div>
-              </div>
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
+            <div class="text-base text-neutral-50 font-medium">Priority queue</div>
+          </div>
 
-              <div class="w-1/2">
-                <.input field={@form[:failure_threshold]} label="Failure threshold" type="number" hint={help_message_for(:failure_threshold)} />
-              </div>
+          <div class="flex flex-col p-6 gap-6">
+            <div class="flex flex-col gap-3">
+              <p class="text-sm text-base-400 w-2/3">
+                Enable priority queue to fast-track devices with older firmware versions (e.g., fresh from factory) for immediate updates, bypassing the normal rolling update queue.
+              </p>
             </div>
 
+            <div class="w-1/2">
+              <.input
+                field={@form[:priority_queue_enabled]}
+                type="checkbox"
+                label="Enable priority queue"
+              />
+            </div>
+
+            <div class="w-1/2">
+              <.input
+                field={@form[:priority_queue_concurrent_updates]}
+                label="Priority Queue Concurrent Updates"
+                type="number"
+                hint="The number of priority devices that will update concurrently, separate from the main concurrent limit."
+              />
+            </div>
+
+            <div class="w-1/2">
+              <.input
+                field={@form[:priority_queue_firmware_version_threshold]}
+                label="Firmware Version Threshold"
+                type="text"
+                placeholder="eg. 1.0.0"
+                hint="Devices with firmware versions at or below this threshold will be processed via the priority queue. Leave empty to disable."
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
+            <div class="text-base text-neutral-50 font-medium">Device penalty box logic</div>
+          </div>
+          <div class="flex flex-col p-6 gap-8 border-t border-base-700">
+            <div>
+              <p class="text-sm text-base-400 w-2/3 mb-4">
+                When device update attempts fail consistently, the device is placed in the penalty box. It will not attempt to update until it's removed from the penalty box.
+              </p>
+              <p class="text-sm text-base-400 w-2/3">
+                There are two ways a device can be removed from the penalty box: after "Device penalty box timeout minutes" have passed or viewing the device and re-enabling "Firmware updates" in the top right of UI. In both cases, device update attempts will resume again.
+              </p>
+            </div>
             <div class="flex gap-6">
               <div class="w-1/2">
                 <div phx-feedback-for={@form[:device_failure_rate_amount].name}>
@@ -181,10 +178,10 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
                       id={@form[:device_failure_rate_amount].id}
                       value={Phoenix.HTML.Form.normalize_value("number", @form[:device_failure_rate_amount].value)}
                       class={[
-                        "mt-2 py-1.5 px-2 block w-20 rounded text-zinc-400 bg-zinc-900 focus:ring-0 sm:text-sm",
-                        "phx-no-feedback:border-zinc-600 phx-no-feedback:focus:border-zinc-700",
-                        @form[:device_failure_rate_amount].errors == [] && "border-zinc-600 focus:border-zinc-700",
-                        @form[:device_failure_rate_amount].errors != [] && "border-red-500 focus:border-red-500"
+                        "mt-2 py-1.5 px-2 block w-20 rounded text-base-400 bg-base-900 focus:ring-0 sm:text-sm",
+                        "phx-no-feedback:border-base-600 phx-no-feedback:focus:border-base-700",
+                        @form[:device_failure_rate_amount].errors == [] && "border-base-600 focus:border-base-700",
+                        @form[:device_failure_rate_amount].errors != [] && "border-alert focus:border-alert"
                       ]}
                     />
                     <div class="text-sm mt-2">failures per</div>
@@ -194,15 +191,15 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
                       id={@form[:device_failure_rate_seconds].id}
                       value={Phoenix.HTML.Form.normalize_value("number", @form[:device_failure_rate_seconds].value)}
                       class={[
-                        "mt-2 py-1.5 px-2 block w-20 rounded text-zinc-400 bg-zinc-900 focus:ring-0 sm:text-sm",
-                        "phx-no-feedback:border-zinc-600 phx-no-feedback:focus:border-zinc-700",
-                        @form[:device_failure_rate_seconds].errors == [] && "border-zinc-600 focus:border-zinc-700",
-                        @form[:device_failure_rate_seconds].errors != [] && "border-red-500 focus:border-red-500"
+                        "mt-2 py-1.5 px-2 block w-20 rounded text-base-400 bg-base-900 focus:ring-0 sm:text-sm",
+                        "phx-no-feedback:border-base-600 phx-no-feedback:focus:border-base-700",
+                        @form[:device_failure_rate_seconds].errors == [] && "border-base-600 focus:border-base-700",
+                        @form[:device_failure_rate_seconds].errors != [] && "border-alert focus:border-alert"
                       ]}
                     />
                     <div class="text-sm mt-2">sec</div>
                   </div>
-                  <div class="flex flex-col gap-1 text-xs text-zinc-400 pt-1">
+                  <div class="flex flex-col gap-1 text-xs text-base-400 pt-1">
                     {help_message_for(:device_failure_rate)}
                   </div>
                   <.error :for={msg <- Enum.map(@form[:device_failure_rate_amount].errors ++ @form[:device_failure_rate_seconds].errors, &NervesHubWeb.CoreComponents.translate_error(&1))}>
@@ -210,12 +207,10 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
                   </.error>
                 </div>
               </div>
-
               <div class="w-1/2">
                 <.input field={@form[:device_failure_threshold]} label="Device failure threshold" type="number" hint={help_message_for(:device_failure_threshold)} />
               </div>
             </div>
-
             <div class="flex gap-6">
               <div class="w-1/2">
                 <.input field={@form[:penalty_timeout_minutes]} label="Device penalty box timeout minutes" type="number" hint={help_message_for(:penalty_timeout_minutes)} />
@@ -224,14 +219,14 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
           </div>
         </div>
 
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
             <div class="text-base text-neutral-50 font-medium">First Connect Code</div>
           </div>
 
           <div class="flex flex-col p-6 gap-6">
             <div class="w-2/3 flex flex-col gap-6">
-              <.input field={@form[:connecting_code]} type="textarea" rows={8} label="Run this code when the device first connects to the console.">
+              <.input field={@form[:connecting_code]} type="textarea" rows={8} label="Run this code when the device first connects to the console." phx-debounce="2000">
                 <:rich_hint>
                   <p>
                     Make sure this is valid Elixir and will not crash the device.
@@ -245,8 +240,8 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
           </div>
         </div>
 
-        <div class="w-2/3 flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-          <div class="flex items-center justify-between p-6 gap-6 border-t border-zinc-700">
+        <div class="w-2/3 flex flex-col bg-base-900 border border-base-700 rounded">
+          <div class="flex items-center justify-between p-6 gap-6 border-t border-base-700">
             <.button style="secondary" type="submit">
               <.icon name="save" /> Save changes
             </.button>
@@ -254,7 +249,7 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
             <.button
               type="link"
               style="danger"
-              phx-click="delete-deployment-group"
+              phx-click="delete"
               aria-label="Delete"
               data-confirm={[
                 "Are you sure you want to delete this deployment group?",
@@ -272,21 +267,26 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
   end
 
   @impl Phoenix.LiveComponent
+  def handle_event("validate-deployment-group", %{"deployment_group" => params}, socket) do
+    changeset =
+      socket.assigns.deployment_group
+      |> DeploymentGroup.update_changeset(params)
+
+    socket
+    |> assign(:form, to_form(changeset, action: :validate))
+    |> noreply()
+  end
+
   def handle_event("update-deployment-group", %{"deployment_group" => params}, socket) do
     %{
-      org_user: org_user,
-      org: org,
-      product: product,
-      user: user,
+      current_scope: %{org: org, product: product, user: user},
       deployment_group: deployment_group
     } =
       socket.assigns
 
-    authorized!(:"deployment_group:update", org_user)
+    authorized!(:"deployment_group:update", socket.assigns.current_scope)
 
-    params = inject_conditions_map(params)
-
-    case ManagedDeployments.update_deployment_group(deployment_group, params) do
+    case ManagedDeployments.update_deployment_group(deployment_group, params, user) do
       {:ok, updated} ->
         # Use original deployment so changes will get
         # marked in audit log
@@ -296,10 +296,8 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
           "User #{user.name} updated deployment group #{updated.name}"
         )
 
-        # TODO: if we move away from slugs with deployment names we won't need
-        # to use `push_navigate` here.
         socket
-        |> put_flash(:info, "Deployment group updated")
+        |> put_flash(:info, "Deployment Group updated")
         |> push_navigate(to: ~p"/org/#{org}/#{product}/deployment_groups/#{updated}")
         |> noreply()
 
@@ -315,7 +313,7 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
   end
 
   def handle_event("delete-deployment-group", _params, socket) do
-    authorized!(:"deployment_group:delete", socket.assigns.org_user)
+    authorized!(:"deployment_group:delete", socket.assigns.current_scope)
 
     %{deployment_group: deployment_group, org: org, product: product, user: user} = socket.assigns
 
@@ -329,95 +327,16 @@ defmodule NervesHubWeb.Components.DeploymentGroupPage.Settings do
     |> noreply()
   end
 
-  defp inject_conditions_map(%{"version" => version, "tags" => tags} = params) do
-    params
-    |> Map.put("conditions", %{
-      "version" => version,
-      "tags" =>
-        tags
-        |> tags_as_list()
-        |> MapSet.new()
-        |> MapSet.to_list()
-    })
-  end
-
-  defp inject_conditions_map(params), do: params
-
-  defp tags_as_list(""), do: []
-
-  defp tags_as_list(tags) do
-    tags
-    |> String.split(",")
-    |> Enum.map(&String.trim/1)
-  end
-
-  def firmware_dropdown_options(firmwares) do
-    firmwares
-    |> Enum.sort_by(
-      fn firmware ->
-        case Version.parse(firmware.version) do
-          {:ok, version} ->
-            version
-
-          :error ->
-            %Version{major: 0, minor: 0, patch: 0}
-        end
-      end,
-      {:desc, Version}
-    )
-    |> Enum.map(&[value: &1.id, key: firmware_display_name(&1)])
-  end
-
-  def archive_dropdown_options(archives) do
-    archives
-    |> Enum.sort_by(
-      fn archive ->
-        case Version.parse(archive.version) do
-          {:ok, version} ->
-            version
-
-          :error ->
-            %Version{major: 0, minor: 0, patch: 0}
-        end
-      end,
-      {:desc, Version}
-    )
-    |> Enum.map(&[value: &1.id, key: archive_display_name(&1)])
-  end
-
-  def archive_display_name(%{} = a) do
-    "#{a.version} - #{a.platform} - #{a.architecture} (#{String.slice(a.uuid, 0..7)})"
-  end
-
   defp help_message_for(field) do
     case field do
-      :failure_threshold ->
-        "Maximum number of target devices from this deployment group that can be in an unhealthy state before marking the deployment group unhealthy."
-
-      :failure_rate ->
-        "Maximum number of device install failures from this deployment group within X seconds before being marked unhealthy."
-
       :device_failure_rate ->
-        "Maximum number of device failures within X seconds a device can have for this deployment group before being marked unhealthy."
+        "Maximum number of update attempts within X seconds a device can have for this deployment group before being placed in penalty box."
 
       :device_failure_threshold ->
-        "Maximum number of install attempts and/or failures a device can have for this deployment group before being marked unhealthy."
+        "Maximum number of update attempts a device can have for this deployment group before being placed in penalty box."
 
       :penalty_timeout_minutes ->
-        "Number of minutes a device is placed in the penalty box for reaching the failure rate and threshold."
+        "Number of minutes a device is placed in penalty box for reaching the failure rate or threshold."
     end
-  end
-
-  defp firmware_display_name(%Firmware{} = f) do
-    "#{f.version} - #{f.platform} - #{f.architecture} (#{String.slice(f.uuid, 0..7)})"
-  end
-
-  @doc """
-  Convert tags from a list to a comma-separated list (in a string)
-  """
-  def tags_to_string(%Phoenix.HTML.FormField{} = field) do
-    field.value
-    |> Map.get("tags", [])
-    |> Enum.join(", ")
   end
 end

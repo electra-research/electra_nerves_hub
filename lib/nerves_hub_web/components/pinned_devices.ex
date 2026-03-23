@@ -15,22 +15,22 @@ defmodule NervesHubWeb.Components.PinnedDevices do
       <div class="mt-12 h-[88px] py-6 flex items-center justify-between">
         <h1 class="text-xl leading-[30px] font-semibold text-neutral-50">My Pinned Devices</h1>
       </div>
-      <div class="bg-zinc-900 border border-zinc-700 rounded">
+      <div class="bg-base-900 border border-base-700 rounded">
         <div class="flex flex-col">
           <div class="listing">
             <table class="">
               <thead>
                 <tr>
-                  <th>Identifier</th>
+                  <th class="rounded-tl">Identifier</th>
                   <th>Health</th>
                   <th>Firmware</th>
                   <th>Platform</th>
                   <th>Tags</th>
-                  <th>Project</th>
+                  <th class="rounded-tr">Project</th>
                 </tr>
               </thead>
               <tbody>
-                <tr :for={device <- @devices} class="border-b border-zinc-800 relative">
+                <tr :for={device <- @devices} class="border-b last:border-0 border-base-800 relative last:rounded-b">
                   <td>
                     <div class="flex gap-[8px] items-center">
                       <span title="status">
@@ -96,8 +96,9 @@ defmodule NervesHubWeb.Components.PinnedDevices do
                     </span>
                   </td>
 
-                  <td>
-                    <div class="flex items-center gap-[4px]">
+                  <td class="max-w-[250px] relative">
+                    <span class="pinned-device-tag-gradient-mask" />
+                    <div class="flex items-center text-nowrap gap-[4px] scrollable-inner">
                       <%= if !is_nil(device.tags) do %>
                         <%= for tag <- device.tags do %>
                           <span class="tag">{tag}</span>
@@ -116,7 +117,7 @@ defmodule NervesHubWeb.Components.PinnedDevices do
             </table>
           </div>
 
-          <div :if={@total_count > @device_limit} phx-click="toggle-expand-devices" class="px-6 py-2 text-center text-xs font-normal text-zinc-400  hover:text-neutral-50 hover:cursor-pointer">
+          <div :if={@total_count > @device_limit} phx-click="toggle-expand-devices" class="px-6 py-2 text-center text-xs font-normal text-base-400  hover:text-neutral-50 hover:cursor-pointer">
             {if @show_all?, do: "Show less", else: "Show all #{@total_count} devices"}
           </div>
         </div>

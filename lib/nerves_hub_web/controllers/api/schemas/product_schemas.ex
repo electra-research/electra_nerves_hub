@@ -1,5 +1,6 @@
 defmodule NervesHubWeb.API.Schemas.ProductSchemas do
   alias OpenApiSpex.Schema
+
   require OpenApiSpex
 
   defmodule Product do
@@ -13,7 +14,6 @@ defmodule NervesHubWeb.API.Schemas.ProductSchemas do
           type: :string,
           pattern: ~r/[a-zA-Z][a-zA-Z0-9_]+/
         },
-        delta_updatable: %Schema{type: :boolean, description: "Delta Firmware updates enabled"},
         inserted_at: %Schema{
           type: :string,
           description: "Creation timestamp",
@@ -28,7 +28,6 @@ defmodule NervesHubWeb.API.Schemas.ProductSchemas do
       example: %{
         "id" => 123,
         "name" => "Example Product",
-        "delta_updatable" => true,
         "inserted_at" => "2017-09-12T12:34:55Z",
         "updated_at" => "2017-09-12T12:34:55Z"
       }
@@ -47,14 +46,12 @@ defmodule NervesHubWeb.API.Schemas.ProductSchemas do
           %{
             "id" => 123,
             "name" => "Example Product",
-            "delta_updatable" => true,
             "inserted_at" => "2017-09-12T12:34:55Z",
             "updated_at" => "2017-09-13T10:11:12Z"
           },
           %{
             "id" => 246,
             "name" => "Another Example Product",
-            "delta_updatable" => false,
             "inserted_at" => "2019-09-12T12:34:55Z",
             "updated_at" => "2019-09-13T10:11:12Z"
           }
@@ -70,8 +67,7 @@ defmodule NervesHubWeb.API.Schemas.ProductSchemas do
       properties: %{
         product: %Schema{
           properties: %{
-            name: %Schema{type: :string},
-            delta_updatable: %Schema{type: :boolean}
+            name: %Schema{type: :string}
           },
           required: [:name]
         }
@@ -91,15 +87,7 @@ defmodule NervesHubWeb.API.Schemas.ProductSchemas do
       type: :object,
       properties: %{
         product: %Schema{
-          properties: %{
-            delta_updatable: %Schema{type: :boolean}
-          }
-        }
-      },
-      required: [:delta_updatable],
-      example: %{
-        "product" => %{
-          "delta_updatable" => "false"
+          properties: %{}
         }
       }
     })

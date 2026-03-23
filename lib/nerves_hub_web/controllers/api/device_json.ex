@@ -36,7 +36,8 @@ defmodule NervesHubWeb.API.DeviceJSON do
       org_name: device.org.name,
       product_name: device.product.name,
       # deprecated
-      last_communication: connection_last_seen_at(device)
+      last_communication: connection_last_seen_at(device),
+      deleted: deleted(device)
     }
   end
 
@@ -44,8 +45,8 @@ defmodule NervesHubWeb.API.DeviceJSON do
 
   defp deployment_group(deployment_group) do
     %{
-      firmware_uuid: deployment_group.firmware.uuid,
-      firmware_version: deployment_group.firmware.version,
+      firmware_uuid: deployment_group.current_release.firmware.uuid,
+      firmware_version: deployment_group.current_release.firmware.version,
       is_active: deployment_group.is_active,
       name: deployment_group.name
     }
@@ -56,9 +57,11 @@ defmodule NervesHubWeb.API.DeviceJSON do
 
   defp connection_last_seen_at(%{latest_connection: nil}), do: "never"
 
-  defp connection_last_seen_at(%{latest_connection: latest_connection}),
-    do: to_string(latest_connection.last_seen_at)
+  defp connection_last_seen_at(%{latest_connection: latest_connection}), do: to_string(latest_connection.last_seen_at)
 
   defp connection_status(%{latest_connection: %{status: status}}), do: status
   defp connection_status(_), do: :not_seen
+
+  defp deleted(%{deleted_at: nil}), do: false
+  defp deleted(%{deleted_at: _}), do: true
 end

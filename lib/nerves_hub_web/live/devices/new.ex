@@ -1,23 +1,24 @@
 defmodule NervesHubWeb.Live.Devices.New do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
   alias NervesHub.Devices
   alias NervesHub.Devices.Device
+  alias Phoenix.HTML.FormField
 
   def mount(_params, _session, socket) do
     changeset = Ecto.Changeset.change(%Device{})
 
     socket
-    |> page_title("New Device - #{socket.assigns.product.name}")
-    |> assign(:tab_hint, :devices)
+    |> page_title("New Device - #{socket.assigns.current_scope.product.name}")
+    |> sidebar_tab(:devices)
     |> assign(:form, to_form(changeset))
     |> ok()
   end
 
   def handle_event("save-device", %{"device" => device_params}, socket) do
-    authorized!(:"device:create", socket.assigns.org_user)
+    authorized!(:"device:create", socket.assigns.current_scope)
 
-    %{org: org, product: product} = socket.assigns
+    %{current_scope: %{org: org, product: product}} = socket.assigns
 
     device_params
     |> Map.put("org_id", org.id)
@@ -38,7 +39,7 @@ defmodule NervesHubWeb.Live.Devices.New do
     end
   end
 
-  defp tags_to_string(%Phoenix.HTML.FormField{} = field) do
+  defp tags_to_string(%FormField{} = field) do
     tags_to_string(field.value)
   end
 

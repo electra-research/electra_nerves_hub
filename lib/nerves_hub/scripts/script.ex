@@ -5,9 +5,11 @@ defmodule NervesHub.Scripts.Script do
 
   alias NervesHub.Accounts.User
   alias NervesHub.Products.Product
+  alias NervesHub.Types.Tag
 
   @type t :: %__MODULE__{}
   @required [:name, :text]
+  @optional [:tags]
 
   schema "scripts" do
     belongs_to(:product, Product)
@@ -16,26 +18,30 @@ defmodule NervesHub.Scripts.Script do
 
     field(:name, :string)
     field(:text, :string)
+    field(:tags, Tag)
 
     timestamps()
   end
 
-  def create_changeset(%__MODULE__{} = struct, product, created_by, params) do
+  def validate_changeset(struct \\ %__MODULE__{}, params) do
     struct
-    |> cast(params, @required)
-    |> put_assoc(:product, product)
-    |> put_assoc(:created_by, created_by)
-    |> validate_required(@required ++ [:created_by])
+    |> cast(params, @required ++ @optional)
+    |> validate_required(@required)
     |> validate_length(:name, lte: 255)
+  end
+
+  def create_changeset(product, created_by, params) do
+    validate_changeset(params)
+    |> put_assoc(:product, product)
+    |> foreign_key_constraint(:product_id)
+    |> put_assoc(:created_by, created_by)
     |> foreign_key_constraint(:created_by_id)
   end
 
   def update_changeset(%__MODULE__{} = struct, edited_by, params \\ %{}) do
     struct
-    |> cast(params, @required)
+    |> validate_changeset(params)
     |> put_change(:last_updated_by_id, edited_by.id)
-    |> validate_required(@required)
-    |> validate_length(:name, lte: 255)
     |> foreign_key_constraint(:last_updated_by_id)
   end
 end

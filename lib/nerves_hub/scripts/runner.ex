@@ -15,16 +15,17 @@ defmodule NervesHub.Scripts.Runner do
   use GenServer
 
   alias NervesHubWeb.Endpoint
+  alias Phoenix.Socket.Broadcast
 
   defmodule State do
     defstruct [:buffer, :device_channel, :from, :receive_channel, :send_channel, :text]
   end
 
-  def send(device, command) do
+  def send(device, command, timeout \\ to_timeout(second: 30)) do
     {:ok, pid} = start_link(device)
-    {:ok, GenServer.call(pid, {:send, command.text}, 10_000)}
+    {:ok, GenServer.call(pid, {:send, command.text}, timeout)}
   catch
-    :exit, _ -> {:error, "device not responding"}
+    :exit, _ -> {:error, "device did not respond in #{timeout} milliseconds"}
   end
 
   def start_link(device) do
@@ -62,11 +63,7 @@ defmodule NervesHub.Scripts.Runner do
   def handle_info({:error, :incompatible_version}, state) do
     text = ~s/#{state.text}\n# [NERVESHUB:END]/
 
-    text
-    |> String.graphemes()
-    |> Enum.each(fn character ->
-      Endpoint.broadcast_from!(self(), state.send_channel, "dn", %{"data" => character})
-    end)
+    Endpoint.broadcast_from!(self(), state.send_channel, "dn", %{"data" => text})
 
     _ = Endpoint.subscribe(state.receive_channel)
 
@@ -75,7 +72,7 @@ defmodule NervesHub.Scripts.Runner do
     {:noreply, state}
   end
 
-  def handle_info(%Phoenix.Socket.Broadcast{event: "up", payload: %{"data" => text}}, state) do
+  def handle_info(%Broadcast{event: "up", payload: %{"data" => text}}, state) do
     state = %{state | buffer: state.buffer <> text}
 
     if String.contains?(state.buffer, "[NERVESHUB:END]") do

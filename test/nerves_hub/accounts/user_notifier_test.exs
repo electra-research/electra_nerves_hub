@@ -1,12 +1,11 @@
 defmodule NervesHub.Accounts.UserNotifierTest do
-  use NervesHub.DataCase
+  use NervesHub.DataCase, async: true
 
   import Swoosh.X.TestAssertions
 
   alias NervesHub.Accounts
   alias NervesHub.Accounts.User
   alias NervesHub.Accounts.UserNotifier
-
   alias NervesHub.Fixtures
 
   test "invite email" do

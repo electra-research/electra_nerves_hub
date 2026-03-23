@@ -1,4 +1,10 @@
 defmodule NervesHubWeb.ApiSpec do
+  @behaviour OpenApiSpex.OpenApi
+
+  alias NervesHubWeb.API.OpenAPI.DeviceControllerSpecs
+  alias NervesHubWeb.Endpoint
+  alias NervesHubWeb.Plugs.ImAlive
+  alias NervesHubWeb.Router
   alias OpenApiSpex.Components
   alias OpenApiSpex.Info
   alias OpenApiSpex.MediaType
@@ -10,14 +16,8 @@ defmodule NervesHubWeb.ApiSpec do
   alias OpenApiSpex.Server
   alias OpenApiSpex.Tag
 
-  alias NervesHubWeb.API.OpenAPI.DeviceControllerSpecs
-  alias NervesHubWeb.Endpoint
-  alias NervesHubWeb.Router
-
-  @behaviour OpenApi
-
   @impl OpenApi
-  def spec do
+  def spec() do
     %OpenApi{
       servers: [
         # Populate the Server info from a phoenix endpoint
@@ -28,7 +28,7 @@ defmodule NervesHubWeb.ApiSpec do
         version: "2.0.0"
       },
       # Populate the paths from a phoenix router
-      paths: Paths.from_router(Router),
+      paths: set_paths(),
       components: %Components{
         securitySchemes: %{
           "bearer_auth" => %SecurityScheme{
@@ -59,13 +59,11 @@ defmodule NervesHubWeb.ApiSpec do
         },
         %Tag{
           name: "Devices",
-          description:
-            "Device management, including action requests eg. upgrade, reboot, reconnect"
+          description: "Device management, including action requests eg. upgrade, reboot, reconnect"
         },
         %Tag{
           name: "Devices (short URL)",
-          description:
-            "Device management, including action requests eg. upgrade, reboot, reconnect"
+          description: "Device management, including action requests eg. upgrade, reboot, reconnect"
         },
         %Tag{
           name: "Device Certificates",
@@ -92,6 +90,10 @@ defmodule NervesHubWeb.ApiSpec do
           description: "Organization Signing Key management"
         },
         %Tag{
+          name: "Status",
+          description: "Application healthcheck"
+        },
+        %Tag{
           name: "Support Scripts",
           description: "Organization Support Script management"
         }
@@ -100,5 +102,11 @@ defmodule NervesHubWeb.ApiSpec do
     |> DeviceControllerSpecs.add_operations()
     # Discover request/response schemas from path specs
     |> OpenApiSpex.resolve_schema_modules()
+  end
+
+  defp set_paths() do
+    Router
+    |> Paths.from_router()
+    |> Map.merge(ImAlive.status_path_spec())
   end
 end

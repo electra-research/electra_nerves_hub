@@ -3,12 +3,12 @@ defmodule NervesHub.Firmwares.Upload do
   A behaviour module for managing firmware files within a file storage system.
   """
 
-  @typedoc "Metadata about the file upload."
-  @type upload_metadata :: map()
-
   alias NervesHub.Accounts.Org
   alias NervesHub.Firmwares.Firmware
   alias NervesHub.Firmwares.FirmwareDelta
+
+  @typedoc "Metadata about the file upload."
+  @type upload_metadata :: map()
 
   @doc """
   Called to upload a file to where it needs to live.
@@ -33,4 +33,13 @@ defmodule NervesHub.Firmwares.Upload do
   Called to generate the upload_metadata that will be persisted for later lookup.
   """
   @callback metadata(Org.id(), String.t()) :: upload_metadata()
+
+  @doc """
+  Called to generate the upload_metadata specific to delta firmwares that will be persisted for later lookup.
+  """
+  @callback delta_metadata(
+              Org.id(),
+              source_firmware_uuid :: String.t(),
+              target_firmware_uuid :: String.t()
+            ) :: upload_metadata()
 end

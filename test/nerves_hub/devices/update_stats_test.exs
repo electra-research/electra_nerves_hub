@@ -1,0 +1,293 @@
+defmodule NervesHub.Devices.UpdateStatsTest do
+  use NervesHub.DataCase, async: true
+
+  alias NervesHub.Devices
+  alias NervesHub.Devices.UpdateStat
+  alias NervesHub.Devices.UpdateStats
+  alias NervesHub.Firmwares
+  alias NervesHub.Fixtures
+  alias NervesHub.ManagedDeployments
+  alias NervesHub.Repo
+
+  setup %{tmp_dir: tmp_dir} do
+    user = Fixtures.user_fixture()
+    org = Fixtures.org_fixture(user)
+    product = Fixtures.product_fixture(user, org)
+    org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+    source_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+    target_firmware = Fixtures.firmware_fixture(org_key, product, %{version: "2.0.0", dir: tmp_dir})
+    other_firmware = Fixtures.firmware_fixture(org_key, product, %{version: "2.0.1", dir: tmp_dir})
+
+    deployment_group = Fixtures.deployment_group_fixture(target_firmware, %{user: user, is_active: true})
+
+    device = Fixtures.device_fixture(org, product, source_firmware, %{status: :provisioned})
+
+    # Ensure device firmware metadata reflects the target firmware because
+    # update stats are logged after a successful firmware update
+    {:ok, metadata} = Firmwares.metadata_from_firmware(target_firmware)
+
+    {:ok, device} =
+      Devices.update_firmware_metadata(device, metadata, :unknown, false)
+
+    device2 = Fixtures.device_fixture(org, product, target_firmware)
+    device3 = Fixtures.device_fixture(org, product, target_firmware)
+
+    {:ok, source_firmware_metadata} = Firmwares.metadata_from_firmware(source_firmware)
+
+    {:ok,
+     %{
+       user: user,
+       org: org,
+       device: device,
+       device2: device2,
+       device3: device3,
+       product: product,
+       deployment_group: deployment_group,
+       source_firmware: source_firmware,
+       target_firmware: target_firmware,
+       other_firmware: other_firmware,
+       source_firmware_metadata: source_firmware_metadata
+     }}
+  end
+
+  describe "log_update/2" do
+    test "creates update stat record for full update", %{
+      device: device,
+      source_firmware: source_firmware,
+      target_firmware: target_firmware,
+      deployment_group: deployment_group
+    } do
+      {:ok, metadata} = Firmwares.metadata_from_firmware(source_firmware)
+      device = Devices.update_deployment_group(device, deployment_group)
+      assert :ok = UpdateStats.log_update(device, metadata)
+
+      stats = Repo.all(UpdateStat)
+      assert length(stats) == 1
+
+      [stat] = stats
+      assert stat.device_id == device.id
+      assert stat.product_id == device.product_id
+      assert stat.deployment_id == deployment_group.id
+      assert stat.target_firmware_uuid == deployment_group.current_release.firmware.uuid
+      assert stat.target_firmware_uuid == target_firmware.uuid
+      assert stat.update_bytes == deployment_group.current_release.firmware.size
+      assert stat.saved_bytes == 0
+      assert stat.type == "fwup_full"
+    end
+
+    test "creates update stat record for a delta update", %{
+      device: device,
+      source_firmware: source_firmware,
+      target_firmware: target_firmware
+    } do
+      {:ok, metadata} = Firmwares.metadata_from_firmware(source_firmware)
+      delta = Fixtures.firmware_delta_fixture(source_firmware, target_firmware)
+      assert :ok = UpdateStats.log_update(device, metadata)
+
+      stats = Repo.all(UpdateStat)
+      assert length(stats) == 1
+
+      [stat] = stats
+      assert stat.device_id == device.id
+      assert stat.product_id == device.product_id
+      assert stat.target_firmware_uuid == target_firmware.uuid
+      assert stat.update_bytes == delta.size
+      assert stat.saved_bytes == target_firmware.size - delta.size
+      assert stat.type == "fwup_delta"
+    end
+
+    test "deployment group isn't set when device has no deployment group", %{
+      device: device,
+      source_firmware: source_firmware
+    } do
+      {:ok, metadata} = Firmwares.metadata_from_firmware(source_firmware)
+      assert :ok = UpdateStats.log_update(device, metadata)
+
+      [stat] = Repo.all(UpdateStat)
+
+      refute stat.deployment_id
+    end
+
+    test "deployment group isn't set if target firmware doesn't match deployment's firmware", %{
+      device: device,
+      deployment_group: deployment_group,
+      other_firmware: other_firmware
+    } do
+      device = Devices.update_deployment_group(device, deployment_group)
+      assert device.deployment_id
+
+      {:ok, metadata} = Firmwares.metadata_from_firmware(other_firmware)
+
+      {:ok, device} =
+        Devices.update_firmware_metadata(device, metadata, :unknown, false)
+
+      assert :ok = UpdateStats.log_update(device, nil)
+
+      [stat] = Repo.all(UpdateStat)
+
+      refute stat.deployment_id
+    end
+  end
+
+  describe "stats_by_device/1" do
+    test "returns aggregated stats for a specific device", %{
+      device: device,
+      device2: device2,
+      deployment_group: deployment_group,
+      source_firmware: source_firmware,
+      target_firmware: target_firmware,
+      source_firmware_metadata: source_firmware_metadata
+    } do
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+      delta = Fixtures.firmware_delta_fixture(source_firmware, target_firmware)
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+
+      # Create stats for device2 (should not be included)
+      UpdateStats.log_update(device2, source_firmware_metadata)
+
+      result = UpdateStats.stats_by_device(device)
+
+      # Should aggregate all updates for this device
+      expected_bytes = deployment_group.current_release.firmware.size + delta.size
+
+      assert result.total_update_bytes == expected_bytes
+      assert result.total_updates == 2
+      assert is_integer(result.total_saved_bytes)
+    end
+
+    test "returns empty result for device with no stats", %{device: device} do
+      result = UpdateStats.stats_by_device(device)
+      assert result == %{total_update_bytes: 0, total_updates: 0, total_saved_bytes: 0}
+    end
+
+    test "handles device with only one stat record", %{
+      device: device,
+      source_firmware_metadata: source_firmware_metadata,
+      deployment_group: deployment_group
+    } do
+      UpdateStats.log_update(device, source_firmware_metadata)
+
+      result = UpdateStats.stats_by_device(device)
+
+      assert result.total_update_bytes == deployment_group.current_release.firmware.size
+      assert result.total_saved_bytes == 0
+      assert result.total_updates == 1
+    end
+  end
+
+  describe "stats_by_deployment/1" do
+    test "returns stats grouped by source firmware uuid for deployment", %{
+      device: device,
+      device2: device2,
+      deployment_group: deployment_group,
+      source_firmware: source_firmware,
+      target_firmware: target_firmware,
+      other_firmware: other_firmware,
+      source_firmware_metadata: source_firmware_metadata,
+      user: user
+    } do
+      device = Devices.update_deployment_group(device, deployment_group)
+      device2 = Devices.update_deployment_group(device2, deployment_group)
+
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+      _ = Fixtures.firmware_delta_fixture(source_firmware, target_firmware)
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(deployment_group, other_firmware, nil, user)
+
+      # deployment group needs to be explicitly passed in because association
+      # is already preloaded from fixtures, causing the preload in log_update/2
+      # to noop
+      :ok =
+        UpdateStats.log_update(
+          %{
+            device2
+            | firmware_metadata: %{uuid: other_firmware.uuid},
+              deployment_group: deployment_group
+          },
+          source_firmware_metadata
+        )
+
+      stats = UpdateStats.stats_by_deployment(deployment_group)
+
+      assert stats[target_firmware.uuid].total_updates == 2
+      assert stats[other_firmware.uuid].total_updates == 1
+    end
+
+    test "returns empty result for deployment with no stats", %{
+      deployment_group: deployment_group
+    } do
+      result = UpdateStats.stats_by_deployment(deployment_group)
+      assert result == %{}
+    end
+
+    test "scopes by product id", %{
+      device: device,
+      device2: device2,
+      deployment_group: deployment_group,
+      target_firmware: target_firmware,
+      source_firmware_metadata: source_firmware_metadata,
+      tmp_dir: tmp_dir
+    } do
+      device = Devices.update_deployment_group(device, deployment_group)
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+
+      # create firmware from different product with same uuid
+      user2 = Fixtures.user_fixture()
+      org2 = Fixtures.org_fixture(user2, %{name: "foo"})
+      org_key2 = Fixtures.org_key_fixture(org2, user2, tmp_dir)
+      product2 = Fixtures.product_fixture(user2, org2)
+
+      firmware2 =
+        Fixtures.firmware_fixture(org_key2, product2, %{version: "2.0.0", dir: tmp_dir})
+        |> Ecto.Changeset.change(%{uuid: target_firmware.uuid})
+        |> Repo.update!()
+
+      {:ok, firmware2_metadata} = Firmwares.metadata_from_firmware(firmware2)
+      :ok = UpdateStats.log_update(device2, firmware2_metadata)
+
+      stats = UpdateStats.stats_by_deployment(deployment_group)
+      assert stats[target_firmware.uuid].total_updates == 1
+    end
+  end
+
+  describe "total_stats_by_product/1" do
+    test "returns aggregated stats for all devices in a product", %{
+      user: user,
+      org: org,
+      device: device,
+      device2: device2,
+      product: product,
+      deployment_group: deployment_group,
+      source_firmware: source_firmware,
+      target_firmware: target_firmware,
+      source_firmware_metadata: source_firmware_metadata
+    } do
+      # Stats for devices in product
+      :ok = UpdateStats.log_update(device, source_firmware_metadata)
+      delta = Fixtures.firmware_delta_fixture(source_firmware, target_firmware)
+      :ok = UpdateStats.log_update(device2, source_firmware_metadata)
+
+      product2 = Fixtures.product_fixture(user, org, %{name: "test-product-2"})
+      device3 = Fixtures.device_fixture(org, product2, source_firmware)
+
+      # Stats for device in product2 (should not be included)
+      :ok = UpdateStats.log_update(device3, source_firmware_metadata)
+
+      result = UpdateStats.total_stats_by_product(product)
+
+      expected_bytes =
+        deployment_group.current_release.firmware.size + delta.size
+
+      assert result.total_update_bytes == expected_bytes
+      assert result.total_updates == 2
+      assert is_integer(result.total_saved_bytes)
+    end
+
+    test "returns empty result for product with no stats", %{product: product} do
+      result = UpdateStats.total_stats_by_product(product)
+      assert result == %{total_update_bytes: 0, total_updates: 0, total_saved_bytes: 0}
+    end
+  end
+end

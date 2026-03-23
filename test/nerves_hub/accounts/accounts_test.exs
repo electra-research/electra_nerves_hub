@@ -2,7 +2,6 @@ defmodule NervesHub.AccountsTest do
   use NervesHub.DataCase, async: true
 
   alias Ecto.Changeset
-
   alias NervesHub.Accounts
   alias NervesHub.Accounts.Invite
   alias NervesHub.Accounts.Org
@@ -112,12 +111,12 @@ defmodule NervesHub.AccountsTest do
     assert {:error, :last_user} = Accounts.remove_org_user(org, user)
   end
 
-  test "find_org_user_with_device : fetch OrgUser for a user and device id" do
+  test "find_org_user_with_device : fetch OrgUser for a user and device id", %{tmp_dir: tmp_dir} do
     user = Fixtures.user_fixture()
     org = Fixtures.org_fixture(user)
     product = Fixtures.product_fixture(user, org)
-    org_key = Fixtures.org_key_fixture(org, user)
-    firmware = Fixtures.firmware_fixture(org_key, product)
+    org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+    firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
     device = Fixtures.device_fixture(org, product, firmware)
 
     user2 = Fixtures.user_fixture()
@@ -152,6 +151,16 @@ defmodule NervesHub.AccountsTest do
                Accounts.authenticate(user.email, "wrong password")
     end
 
+    test "with blank password", %{user: user} do
+      assert {:error, :authentication_failed} =
+               Accounts.authenticate(user.email, "")
+    end
+
+    test "password is nil", %{user: user} do
+      assert {:error, :authentication_failed} =
+               Accounts.authenticate(user.email, nil)
+    end
+
     test "with non existent user email" do
       assert {:error, :authentication_failed} =
                Accounts.authenticate("non existent email", "wrong password")
@@ -176,50 +185,65 @@ defmodule NervesHub.AccountsTest do
              Accounts.authenticate(user.email, "test_password")
   end
 
-  test "org_key name must be unique", %{user: user} do
-    {:ok, org} = Accounts.create_org(user, @required_org_params)
+  describe "org_key" do
+    test "name must be unique", %{user: user} do
+      {:ok, org} = Accounts.create_org(user, @required_org_params)
 
-    {:ok, _} =
-      Accounts.create_org_key(%{
-        name: "org's key",
-        org_id: org.id,
-        key: "foo",
-        created_by_id: user.id
-      })
+      {:ok, _} =
+        Accounts.create_org_key(%{
+          name: "org's key",
+          org_id: org.id,
+          key: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=",
+          created_by_id: user.id
+        })
 
-    assert {:error, %Ecto.Changeset{errors: [name: {"has already been taken", [_ | _]}]}} =
-             Accounts.create_org_key(%{
-               name: "org's key",
-               org_id: org.id,
-               key: "foobar",
-               created_by_id: user.id
-             })
-  end
+      assert {:error, %Ecto.Changeset{errors: [name: {"has already been taken", [_ | _]}]}} =
+               Accounts.create_org_key(%{
+                 name: "org's key",
+                 org_id: org.id,
+                 key: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=",
+                 created_by_id: user.id
+               })
+    end
 
-  test "org_key key must be unique", %{user: user} do
-    {:ok, org} = Accounts.create_org(user, @required_org_params)
+    test "key must be unique", %{user: user} do
+      {:ok, org} = Accounts.create_org(user, @required_org_params)
 
-    {:ok, _} =
-      Accounts.create_org_key(%{
-        name: "org's key",
-        org_id: org.id,
-        key: "foo",
-        created_by_id: user.id
-      })
+      {:ok, _} =
+        Accounts.create_org_key(%{
+          name: "org's key",
+          org_id: org.id,
+          key: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=",
+          created_by_id: user.id
+        })
 
-    {:error, %Ecto.Changeset{}} =
-      Accounts.create_org_key(%{name: "org's second key", org_id: org.id, key: "foo"})
-  end
+      {:error, %Ecto.Changeset{}} =
+        Accounts.create_org_key(%{name: "org's second key", org_id: org.id, key: "foo"})
+    end
 
-  test "cannot change org_id of a org_key once created", %{user: user} do
-    org = Fixtures.org_fixture(user)
-    first_id = org.id
-    org_key = Fixtures.org_key_fixture(org, user)
+    test "cannot change org_id once created", %{user: user} do
+      org = Fixtures.org_fixture(user)
+      first_id = org.id
+      org_key = Fixtures.org_key_fixture(org, user)
 
-    other_org = Fixtures.org_fixture(user, %{name: "another_org"})
+      other_org = Fixtures.org_fixture(user, %{name: "another_org"})
 
-    assert {:ok, %OrgKey{org_id: ^first_id}} =
-             Accounts.update_org_key(org_key, %{org_id: other_org.id})
+      assert {:ok, %OrgKey{org_id: ^first_id}} =
+               Accounts.update_org_key(org_key, %{org_id: other_org.id})
+    end
+
+    test "key must be valid", %{user: user} do
+      {:ok, org} = Accounts.create_org(user, @required_org_params)
+
+      assert {:error,
+              %Ecto.Changeset{errors: [key: {"invalid key, please check this is a valid Ed25519 public key", []}]}} =
+               Accounts.create_org_key(%{
+                 name: "org's key",
+                 org_id: org.id,
+                 key: "foobar",
+                 created_by_id: user.id
+               })
+    end
   end
 
   describe "org_metrics" do
@@ -342,11 +366,11 @@ defmodule NervesHub.AccountsTest do
     end
   end
 
-  def setup_org_metric(%{user: user}) do
+  def setup_org_metric(%{user: user, tmp_dir: tmp_dir}) do
     org = Fixtures.org_fixture(user)
     product = Fixtures.product_fixture(user, org)
-    org_key = Fixtures.org_key_fixture(org, user)
-    firmware = Fixtures.firmware_fixture(org_key, product)
+    org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+    firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
     device = Fixtures.device_fixture(org, product, firmware)
     _ = create_firmware_transfer(org, firmware)
 

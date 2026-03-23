@@ -3,22 +3,26 @@ defmodule NervesHub.Devices.Device do
 
   import Ecto.Changeset
 
+  alias __MODULE__
   alias NervesHub.Accounts.Org
   alias NervesHub.Devices.DeviceCertificate
   alias NervesHub.Devices.DeviceConnection
   alias NervesHub.Devices.DeviceHealth
   alias NervesHub.Devices.DeviceMetric
+  alias NervesHub.Devices.UpdateStat
   alias NervesHub.Extensions.DeviceExtensionsSetting
   alias NervesHub.Firmwares.FirmwareMetadata
   alias NervesHub.ManagedDeployments.DeploymentGroup
   alias NervesHub.Products.Product
   alias NervesHub.Logs.Log
-
-  alias __MODULE__
+  alias NervesHub.Types.Tag
 
   @derive {Flop.Schema, filterable: [], sortable: []}
 
   @type t :: %__MODULE__{}
+
+  @type firmware_validation_statuses :: :validated | :not_validated | :unknown
+
   @optional_params [
     :description,
     :updates_enabled,
@@ -29,6 +33,8 @@ defmodule NervesHub.Devices.Device do
     :connecting_code,
     :deployment_id,
     :status,
+    :firmware_validation_status,
+    :firmware_auto_revert_detected,
     :first_seen_at,
     :custom_location_coordinates
   ]
@@ -47,10 +53,11 @@ defmodule NervesHub.Devices.Device do
     has_many(:device_metrics, DeviceMetric, on_delete: :delete_all)
     has_many(:device_health, DeviceHealth, on_delete: :delete_all)
     has_many(:logs, Log, on_delete: :delete_all)
+    has_many(:update_stats, UpdateStat, on_delete: :delete_all)
 
     field(:identifier, :string)
     field(:description, :string)
-    field(:tags, NervesHub.Types.Tag)
+    field(:tags, Tag)
     field(:connecting_code, :string)
     field(:custom_location_coordinates, {:array, :float})
 
@@ -68,10 +75,21 @@ defmodule NervesHub.Devices.Device do
 
     embeds_one(:firmware_metadata, FirmwareMetadata, on_replace: :update)
 
+    field(:firmware_validation_status, Ecto.Enum,
+      values: [:validated, :not_validated, :unknown],
+      default: :unknown
+    )
+
+    field(:firmware_auto_revert_detected, :boolean, default: false)
+
     field(:updates_enabled, :boolean, default: true)
     field(:update_attempts, {:array, :utc_datetime}, default: [])
     field(:updates_blocked_until, :utc_datetime)
 
+    # To be removed in a migration in the next release
+    # field(:priority_updates, :boolean, default: false)
+
+    field(:network_interface, Ecto.Enum, values: [:wifi, :ethernet, :cellular, :unknown])
     field(:deleted_at, :utc_datetime)
 
     timestamps()
@@ -95,7 +113,47 @@ defmodule NervesHub.Devices.Device do
     |> cast_embed(:firmware_metadata)
     |> cast_embed(:extensions)
     |> validate_required(@required_params)
-    |> validate_length(:tags, min: 1)
     |> unique_constraint(:identifier)
+    |> then(fn changeset ->
+      if device.deleted_at && !Map.has_key?(changeset.changes, :deleted_at) do
+        add_error(changeset, :deleted_at, "cannot update while marked as deleted")
+      else
+        changeset
+      end
+    end)
+  end
+
+  def clear_updates_information_changeset(%Device{} = device) do
+    device
+    |> change()
+    |> put_change(:update_attempts, [])
+    |> put_change(:updates_blocked_until, nil)
+  end
+
+  def update_network_interface_changeset(%Device{} = device, nil) do
+    add_error(
+      change(device),
+      :network_interface,
+      "cannot be set to nil"
+    )
+  end
+
+  def update_network_interface_changeset(%Device{} = device, network_interface) do
+    humanized_interface_name = humanized_network_interface_name(network_interface)
+
+    device
+    |> change(%{network_interface: humanized_interface_name})
+    |> cast(%{network_interface: humanized_interface_name}, [:network_interface])
+    |> validate_required([:network_interface])
+  end
+
+  @spec humanized_network_interface_name(String.t()) :: :wifi | :ethernet | :cellular | :unknown
+  def humanized_network_interface_name(interface) do
+    cond do
+      String.starts_with?(interface, "wlan") -> :wifi
+      String.starts_with?(interface, "eth") or String.starts_with?(interface, "en") -> :ethernet
+      String.starts_with?(interface, "wwan") -> :cellular
+      true -> :unknown
+    end
   end
 end

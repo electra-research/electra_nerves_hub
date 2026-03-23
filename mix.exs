@@ -1,18 +1,16 @@
 defmodule NervesHub.MixProject do
   use Mix.Project
 
-  def project do
+  def project() do
     [
       app: :nerves_hub,
-      version: "2.0.0+#{build()}",
+      version: "2.4.0+#{build()}",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      preferred_cli_env: [
-        docs: :docs
-      ],
       elixirc_paths: elixirc_paths(Mix.env()),
-      elixir: "~> 1.18.0",
+      elixir: "~> 1.19.0",
+      listeners: listeners(Mix.env()),
       releases: [
         nerves_hub: [
           steps: [:assemble],
@@ -24,19 +22,21 @@ defmodule NervesHub.MixProject do
           ]
         ]
       ],
+      compilers: compilers(System.get_env("MIX_UNUSED")) ++ Mix.compilers(),
       dialyzer: [
         flags: [:missing_return, :extra_return, :unmatched_returns, :error_handling, :underspecs],
         plt_add_apps: [:ex_unit, :mix],
         plt_core_path: "priv/plts",
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"}
-      ]
+      ],
+      test_coverage: [tool: ExCoveralls]
     ]
   end
 
   # Configuration for the OTP application.
   #
   # Type `mix help compile.app` for more information.
-  def application do
+  def application() do
     [
       mod: {NervesHub.Application, []},
       extra_applications: [
@@ -49,6 +49,14 @@ defmodule NervesHub.MixProject do
         :crypto,
         :public_key
       ]
+    ]
+  end
+
+  def cli() do
+    [
+      docs: :docs,
+      coveralls: :test,
+      "coveralls.html": :test
     ]
   end
 
@@ -66,38 +74,50 @@ defmodule NervesHub.MixProject do
   # the apps folder.
   #
   # Run "mix help deps" for examples and options.
-  defp deps do
+  defp deps() do
     [
+      {:sizeable, "~> 1.0"},
       {:mix_test_watch, "~> 1.0", only: :test, runtime: false},
       {:recon, "~> 2.5"},
       {:assert_eventually, "~> 1.0.0", only: [:dev, :test]},
       {:bandit, "~> 1.0"},
       {:bcrypt_elixir, "~> 3.0"},
+      {:briefly, "~> 0.5.0"},
       {:castore, "~> 1.0"},
-      {:circular_buffer, "~> 0.4.1"},
+      {:circular_buffer, "~> 1.0.0"},
       {:comeonin, "~> 5.3"},
+      {:confuse, "~> 0.3.1"},
       {:contex, "~> 0.5.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:crontab, "~> 1.1"},
       {:decorator, "~> 1.2"},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ecto, "~> 3.8", override: true},
+      {:ecto_ch, "~> 0.8.0"},
       {:ecto_psql_extras, "~> 0.7"},
       {:ecto_sql, "~> 3.0"},
       {:esbuild, "~> 0.8", runtime: Mix.env() == :dev},
       {:ex_aws, "~> 2.0"},
       {:ex_aws_s3, "~> 2.0"},
-      {:finch, "~> 0.19.0"},
-      {:floki, ">= 0.27.0", only: :test},
+      {:excoveralls, "~> 0.18", only: :test},
+      {:finch, "~> 0.21.0"},
+      {:floki, "~> 0.38.0"},
       {:gen_smtp, "~> 1.0"},
       {:gettext, "~> 0.26.2"},
       {:hackney, "~> 1.16"},
+      {:hammer, "~> 7.1.0"},
       {:hlclock, "~> 1.0"},
-      {:process_hub, "~> 0.3.1-alpha"},
+      {:process_hub, "~> 0.5.0-beta"},
       {:jason, "~> 1.2", override: true},
-      {:libcluster_postgres, "~> 0.1.2"},
+      {:lazy_html, ">= 0.0.0", only: :test},
+      {:libcluster_postgres, "~> 0.2.0"},
       {:logfmt_ex, "~> 0.4"},
-      {:mimic, "~> 1.10", only: [:test, :dev]},
+      {
+        :lucide,
+        github: "lucide-icons/lucide", tag: "0.577.0", sparse: "icons", app: false, compile: false, depth: 1
+      },
+      {:mimic, "~> 2.0", only: [:test, :dev]},
+      {:mix_unused, "~> 0.4.1", only: [:dev]},
       {:mjml_eex, "~> 0.12.0"},
       {:nimble_csv, "~> 1.1"},
       {:number, "~> 1.0.5"},
@@ -109,25 +129,28 @@ defmodule NervesHub.MixProject do
       {:opentelemetry_api, "~> 1.4"},
       {:opentelemetry_ecto, "~> 1.2"},
       {:opentelemetry_phoenix, "~> 2.0.0-rc.1 "},
-      {:opentelemetry_oban, "~> 1.0",
-       git: "https://github.com/joshk/opentelemetry-erlang-contrib",
-       branch: "update-obans-semantic-conventions",
-       subdir: "instrumentation/opentelemetry_oban"},
-      {:opentelemetry_bandit, "~> 0.2.0-rc.1"},
+      {:opentelemetry_oban, "~> 1.0", git: "https://github.com/joshk/opentelemetry-erlang-contrib",
+       branch: "update-obans-semantic-conventions", subdir: "instrumentation/opentelemetry_oban"},
+      {:opentelemetry_bandit, "~> 0.3.0"},
       {:open_telemetry_decorator, "~> 1.5"},
-      {:phoenix, "~> 1.7.0"},
+      {:phoenix, "~> 1.8.4"},
       {:phoenix_ecto, "~> 4.0"},
-      {:phoenix_html, "~> 3.3.1", override: true},
+      {:phoenix_html, "~> 4.0"},
+      {:phoenix_html_helpers, "~> 1.0"},
       {:phoenix_live_dashboard, "~> 0.8"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
-      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_live_view, "~> 1.1"},
       {:phoenix_pubsub, "~> 2.0"},
       {:phoenix_view, "~> 2.0"},
-      {:phoenix_test, "~> 0.5", only: :test, runtime: false},
+      {:phoenix_test, "~> 0.8", only: :test},
       {:plug, "~> 1.7"},
       {:postgrex, "~> 0.14"},
-      {:sentry, "~> 10.0"},
+      {:quokka, "~> 2.11.2", only: [:dev, :test]},
+      {:req, "~> 0.5"},
+      {:sentry, "~> 12.0"},
       {:slipstream, "~> 1.0", only: [:test, :dev]},
+      {:slugify, "~> 1.3"},
+      {:spellweaver, "~> 0.1", only: [:test, :dev], runtime: false},
       {:sweet_xml, "~> 0.6"},
       {:swoosh, "~> 1.12"},
       {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
@@ -136,6 +159,7 @@ defmodule NervesHub.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:timex, "~> 3.1"},
       {:ueberauth_google, "~> 0.12"},
+      {:unzip, "~> 0.12"},
       {:uuidv7, "~> 1.0"},
       {:x509, "~> 0.5.1 or ~> 0.6"},
       {:flop, "~> 0.26.1"}
@@ -148,9 +172,9 @@ defmodule NervesHub.MixProject do
   #     $ mix ecto.setup
   #
   # See the documentation for `Mix` for more info on aliases.
-  defp aliases do
+  defp aliases() do
     [
-      "assets.deploy": ["esbuild default --minify", "tailwind default --minify", "phx.digest"],
+      "assets.deploy": ["tailwind default --minify", "esbuild default --minify", "phx.digest"],
       "assets.setup": ["assets.install", "assets.build"],
       "ecto.setup": [
         "ecto.create",
@@ -160,14 +184,27 @@ defmodule NervesHub.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       "ecto.migrate.reset": ["ecto.drop", "ecto.create", "ecto.migrate"],
       "ecto.migrate.redo": ["ecto.rollback", "ecto.migrate"],
-      test: ["ecto.create --quiet", "ecto.migrate", "test"]
+      test: ["ecto.create --quiet", "ecto.migrate", "test"],
+      # Runs most of the non-test CI checks for you
+      check: [
+        "compile --warnings-as-errors",
+        "format --check-formatted",
+        "deps.unlock --check-unused",
+        "dialyzer --format github --format dialyxir",
+        "credo --min-priority low",
+        "spellweaver.check"
+      ]
     ]
   end
 
   # Specifies which paths to compile per environment.
-  defp elixirc_paths(env) when env in [:dev, :test],
-    do: ["lib", "test/support"]
+  defp elixirc_paths(env) when env in [:dev, :test], do: ["lib", "test/support"]
 
-  defp elixirc_paths(_),
-    do: ["lib"]
+  defp elixirc_paths(_), do: ["lib"]
+
+  defp compilers(mix_unused) when not is_nil(mix_unused), do: [:phoenix_live_view, :unused]
+  defp compilers(_), do: [:phoenix_live_view]
+
+  defp listeners(:dev), do: [Phoenix.CodeReloader]
+  defp listeners(_), do: []
 end

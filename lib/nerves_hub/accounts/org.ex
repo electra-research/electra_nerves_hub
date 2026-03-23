@@ -4,13 +4,13 @@ defmodule NervesHub.Accounts.Org do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias __MODULE__
   alias NervesHub.Accounts.OrgKey
   alias NervesHub.Accounts.OrgUser
   alias NervesHub.Devices.CACertificate
   alias NervesHub.Devices.Device
   alias NervesHub.Products.Product
   alias NervesHub.Repo
-  alias __MODULE__
 
   @params [:name]
 
@@ -31,10 +31,14 @@ defmodule NervesHub.Accounts.Org do
     field(:deleted_at, :utc_datetime)
     field(:audit_log_days_to_keep, :integer)
 
+    embeds_one :settings, __MODULE__.Settings do
+      field(:firmware_proxy_url, :string)
+    end
+
     timestamps()
   end
 
-  def changeset(%Org{} = org, params) do
+  def changeset(%Org{} = org, params \\ %{}) do
     org
     |> cast(params, @params)
     |> validate_required(@params)
@@ -52,7 +56,7 @@ defmodule NervesHub.Accounts.Org do
     )
   end
 
-  def change_user_role(struct, params) do
+  def change_user_role(struct, params \\ %{}) do
     cast(struct, params, ~w(role)a)
     |> validate_required(~w(role)a)
   end

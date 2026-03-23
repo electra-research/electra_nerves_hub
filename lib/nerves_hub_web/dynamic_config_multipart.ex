@@ -10,16 +10,29 @@ defmodule NervesHubWeb.DynamicConfigMultipart do
   Thank you to https://hexdocs.pm/plug/Plug.Parsers.MULTIPART.html#module-dynamic-configuration
   for the inspiration.
   """
+  @behaviour Plug.Parsers
 
-  @multipart Plug.Parsers.MULTIPART
+  alias NervesHub.Firmwares.Upload
+  alias Plug.Parsers.MULTIPART
 
+  @impl Plug.Parsers
   def init(opts) do
+    # This is called at compile time by default so adding options in runtime.exs
+    # will not be captured here and could lead to unknown problems. For dynamic,
+    # it will be best to calculate options during the parse phase. Otherwise,
+    # all phoenix plugs would need to be set to configure at runtime with
+    # `config :phoenix, plug_init_mode: :runtime`
     opts
   end
 
+  @impl Plug.Parsers
   def parse(conn, "multipart", subtype, headers, opts) do
-    opts = @multipart.init([length: max_file_size(conn)] ++ opts)
-    @multipart.parse(conn, "multipart", subtype, headers, opts)
+    plug_opts =
+      opts
+      |> Keyword.put_new_lazy(:length, fn -> max_file_size(conn) end)
+      |> MULTIPART.init()
+
+    MULTIPART.parse(conn, "multipart", subtype, headers, plug_opts)
   end
 
   def parse(conn, _type, _subtype, _headers, _opts) do
@@ -27,10 +40,12 @@ defmodule NervesHubWeb.DynamicConfigMultipart do
   end
 
   defp max_file_size(conn) do
-    if String.match?(conn.request_path, ~r/^\/api\/orgs\/[-\w]+\/products\/[-\w]+\/firmwares$/) do
-      Application.get_env(:nerves_hub, NervesHub.Firmwares.Upload, [])[:max_size]
+    with ["api", "orgs", _org_name, "products", _product_name, "firmwares"] <- conn.path_info,
+         size = Application.get_env(:nerves_hub, Upload)[:max_size],
+         true <- is_integer(size) do
+      size
     else
-      1_000_000
+      _ -> 1_000_000
     end
   end
 end

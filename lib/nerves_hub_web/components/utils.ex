@@ -2,6 +2,7 @@ defmodule NervesHubWeb.Components.Utils do
   use NervesHubWeb, :component
 
   alias NervesHub.Accounts.OrgUser
+  alias Phoenix.HTML.FormField
 
   def role_options() do
     for {key, value} <- Ecto.Enum.mappings(OrgUser, :role),
@@ -38,13 +39,17 @@ defmodule NervesHubWeb.Components.Utils do
     end
   end
 
-  def disk_usage(%{
-        "disk_available_kb" => available,
-        "disk_total_kb" => total,
-        "disk_used_percentage" => percentage
-      }) do
+  def disk_usage(%{"disk_available_kb" => available, "disk_total_kb" => total, "disk_used_percentage" => percentage}) do
     usage = (total - available) / 1000
 
-    "#{round(usage)} of #{round(available / 1000)} MB (#{round(percentage)}%)"
+    "#{Sizeable.filesize(usage * 1024)} of #{Sizeable.filesize(available * 1024)} (#{round(percentage)}%)"
   end
+
+  def tags_to_string(%FormField{} = field) do
+    tags_to_string(field.value)
+  end
+
+  def tags_to_string(%{tags: tags}), do: tags_to_string(tags)
+  def tags_to_string(tags) when is_list(tags), do: Enum.join(tags, ", ")
+  def tags_to_string(tags), do: tags
 end

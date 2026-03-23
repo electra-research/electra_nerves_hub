@@ -1,10 +1,27 @@
 defmodule NervesHub.Tracker do
+  alias NervesHub.Devices.Device
+  alias NervesHub.Repo
+  alias Phoenix.Channel.Server, as: ChannelServer
+
   @doc """
   Tell internal listeners that the device is online, via a connection change
   """
 
-  alias NervesHub.Devices.Device
-  alias NervesHub.Repo
+  def heartbeat(%Device{} = device) do
+    _ =
+      ChannelServer.broadcast(
+        NervesHub.PubSub,
+        "device:#{device.identifier}:internal",
+        "connection:heartbeat",
+        %{}
+      )
+
+    :ok
+  end
+
+  def connecting(%Device{} = device) do
+    publish(device.identifier, "connecting")
+  end
 
   def online(%{} = device) do
     online(device.identifier)
@@ -16,7 +33,7 @@ defmodule NervesHub.Tracker do
 
   def confirm_online(%Device{identifier: identifier}) do
     _ =
-      Phoenix.Channel.Server.broadcast(
+      ChannelServer.broadcast(
         NervesHub.PubSub,
         "device:#{identifier}:internal",
         "connection:status",
@@ -32,17 +49,13 @@ defmodule NervesHub.Tracker do
   @doc """
   Tell internal listeners that the device is offline, via a connection change
   """
-  def offline(%{} = device) do
-    offline(device.identifier)
-  end
-
-  def offline(identifier) when is_binary(identifier) do
+  def offline(%Device{identifier: identifier}) when is_binary(identifier) do
     publish(identifier, "offline")
   end
 
   defp publish(identifier, status) do
     _ =
-      Phoenix.Channel.Server.broadcast(
+      ChannelServer.broadcast(
         NervesHub.PubSub,
         "device:#{identifier}:internal",
         "connection:change",
@@ -77,23 +90,6 @@ defmodule NervesHub.Tracker do
 
   def online?(%{latest_connection: %{status: :connected}}), do: true
   def online?(_), do: false
-
-  @doc """
-  Check if a device is currently online
-
-  If the device is not online this function will wait for a timeout before returning false
-  """
-  def sync_online?(device) do
-    _ = Phoenix.PubSub.broadcast(NervesHub.PubSub, "device:#{device.id}", {:online?, self()})
-
-    receive do
-      :online ->
-        true
-    after
-      500 ->
-        false
-    end
-  end
 
   @doc """
   Check if a device's console channel is available.

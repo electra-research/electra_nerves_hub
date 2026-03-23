@@ -1,45 +1,75 @@
+max_attempts = 3
+
 defmodule NervesHub.Workers.FirmwareDeltaBuilder do
   use Oban.Worker,
-    max_attempts: 5,
+    max_attempts: unquote(max_attempts),
     queue: :firmware_delta_builder,
     unique: [
       period: 60 * 10,
-      states: [:available, :scheduled, :executing]
+      states: [:available, :scheduled, :executing],
+      keys: [:source_id, :target_id],
+      fields: [:worker, :args]
     ]
 
   alias NervesHub.Firmwares
-  alias NervesHub.ManagedDeployments
+  alias NervesHub.Firmwares.FirmwareDelta
+  alias NervesHub.Repo
+
+  require Logger
+
+  @max_attempts max_attempts
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"source_id" => source_id, "target_id" => target_id}}) do
+  def perform(%Oban.Job{id: id, attempt: attempt, args: %{"source_id" => source_id, "target_id" => target_id}}) do
     source = Firmwares.get_firmware!(source_id)
     target = Firmwares.get_firmware!(target_id)
 
-    {:ok, _firmware_delta} = maybe_create_firmware_delta(source, target)
+    Logger.metadata(
+      product_id: source.product_id,
+      source_firmware: source.uuid,
+      source_version: source.version,
+      target_firmware: target.uuid,
+      target_version: target.version,
+      job_id: id
+    )
 
-    Enum.each(ManagedDeployments.get_deployment_groups_by_firmware(target_id), fn deployment ->
-      ManagedDeployments.broadcast(deployment, "deployments/update")
-    end)
+    case Firmwares.get_firmware_delta_by_source_and_target(source.id, target.id) do
+      {:ok, %FirmwareDelta{status: :processing} = delta} ->
+        Logger.info(
+          "Processing delta #{source.version} to #{target.version}; attempt number #{attempt}/#{@max_attempts}"
+        )
 
-    :ok
-  end
+        # if on last attempt and delta hasn't been marked as failed, fail it
+        case Firmwares.generate_firmware_delta(delta, source, target) do
+          {:error, :no_delta_support_in_firmware} ->
+            delta = Repo.reload(delta)
+            Logger.info("Delta generation failed. No delta support detected.")
+            {:ok, _} = Firmwares.fail_firmware_delta(delta)
+            :discard
 
-  def start(source_id, target_id) do
-    {:ok, _job} =
-      %{source_id: source_id, target_id: target_id}
-      |> __MODULE__.new()
-      |> Oban.insert()
+          {:error, _} = err ->
+            delta = Repo.reload(delta)
 
-    :ok
-  end
+            _ =
+              if attempt >= @max_attempts and delta.status != :failed do
+                Logger.warning("Delta generation failed on final attempt, marking as failed")
+                {:ok, _} = Firmwares.fail_firmware_delta(delta)
+              end
 
-  defp maybe_create_firmware_delta(source, target) do
-    case Firmwares.get_firmware_delta_by_source_and_target(source, target) do
-      {:ok, firmware_delta} ->
-        {:ok, firmware_delta}
+            Logger.warning("Delta generation failed: #{inspect(err)}")
+            err
+
+          ok ->
+            ok
+        end
+
+      # Currently we do not retry timed out or failed delta builds
+      # This could lead to generating too many times
+      {:ok, %FirmwareDelta{status: _}} ->
+        :ok
 
       {:error, :not_found} ->
-        {:ok, _firmware_delta} = Firmwares.create_firmware_delta(source, target)
+        :ok
     end
   end
 end

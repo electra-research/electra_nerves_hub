@@ -2,7 +2,6 @@
 defmodule NervesHubWeb.ConsoleChannel do
   use Phoenix.Channel
 
-  alias NervesHub.Repo
   alias Phoenix.Socket.Broadcast
 
   def join("console", payload, %{assigns: %{device: device}} = socket) do
@@ -62,6 +61,11 @@ defmodule NervesHubWeb.ConsoleChannel do
   def handle_info({:after_join, payload}, socket) do
     socket = assign(socket, :version, payload["console_version"])
 
+    # all devices are lumped into a `console` topic (the name used in join/3)
+    # this can be a security issue as pubsub messages can be sent to all connected devices
+    # additionally, this topic isn't needed or used, so we can unsubscribe from it
+    socket.endpoint.unsubscribe("console")
+
     socket.endpoint.subscribe("device:console:#{socket.assigns.device.id}")
 
     socket.endpoint.broadcast!(
@@ -69,30 +73,6 @@ defmodule NervesHubWeb.ConsoleChannel do
       "console_joined",
       %{}
     )
-
-    # now that the console is connected, push down the device's elixir, line by line
-    device = socket.assigns.device
-    device = Repo.preload(device, [:deployment_group])
-
-    if device.deployment_group && device.deployment_group.connecting_code do
-      device.deployment_group.connecting_code
-      |> String.graphemes()
-      |> Enum.each(fn character ->
-        push(socket, "dn", %{"data" => character})
-      end)
-
-      push(socket, "dn", %{"data" => "\r"})
-    end
-
-    if device.connecting_code do
-      device.connecting_code
-      |> String.graphemes()
-      |> Enum.each(fn character ->
-        push(socket, "dn", %{"data" => character})
-      end)
-
-      push(socket, "dn", %{"data" => "\r"})
-    end
 
     {:noreply, socket}
   end

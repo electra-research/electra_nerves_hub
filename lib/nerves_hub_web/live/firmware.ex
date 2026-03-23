@@ -1,19 +1,28 @@
 defmodule NervesHubWeb.Live.Firmware do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
   alias NervesHub.Accounts
   alias NervesHub.Firmwares
-
+  alias NervesHub.Firmwares.Upload
   alias NervesHubWeb.Components.Pager
   alias NervesHubWeb.Components.Sorting
+  alias Phoenix.Socket.Broadcast
 
   embed_templates("firmware_templates/*")
 
   @pagination_opts ["page_number", "page_size", "sort", "sort_direction"]
 
   @impl Phoenix.LiveView
-  def mount(_params, _session, socket) do
-    {:ok, socket}
+  def mount(_params, _session, %{assigns: %{current_scope: scope}} = socket) do
+    if connected?(socket) do
+      Logger.metadata(user_id: scope.user.id, product_id: scope.product.id)
+
+      :ok = socket.endpoint.subscribe("product:#{scope.product.id}")
+    end
+
+    socket
+    |> assign(:product, scope.product)
+    |> ok()
   end
 
   @impl Phoenix.LiveView
@@ -27,7 +36,7 @@ defmodule NervesHubWeb.Live.Firmware do
     socket
     |> page_title("Firmware - #{product.name}")
     |> sidebar_tab(:firmware)
-    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.org))
+    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.current_scope))
     |> assign(:params, unsigned_params)
     |> allow_upload(:firmware,
       accept: ~w(.fw),
@@ -37,53 +46,26 @@ defmodule NervesHubWeb.Live.Firmware do
       progress: &handle_progress/3
     )
     |> assign_firmware_with_pagination()
-    |> then(fn socket ->
-      if Application.get_env(:nerves_hub, :new_ui) && socket.assigns[:new_ui] do
-        render_with(socket, &list_firmware_template_new/1)
-      else
-        render_with(socket, &list_firmware_template/1)
-      end
-    end)
+    |> render_with(&list_firmware_template/1)
   end
 
-  defp apply_action(%{assigns: %{product: product}} = socket, :show, %{
+  defp apply_action(%{assigns: %{current_scope: scope, product: product}} = socket, :show, %{
          "firmware_uuid" => firmware_uuid
        }) do
-    firmware = Firmwares.get_firmware_by_product_and_uuid!(product, firmware_uuid)
+    firmware = Firmwares.get_firmware_by_uuid!(scope, firmware_uuid)
 
     socket
     |> page_title("Firmware #{firmware_uuid} - #{product.name}")
+    |> sidebar_tab(:firmware)
     |> assign(:firmware, firmware)
-    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.org))
-    |> then(fn socket ->
-      if Application.get_env(:nerves_hub, :new_ui) && socket.assigns[:new_ui] do
-        render_with(socket, &show_firmware_template_new/1)
-      else
-        render_with(socket, &show_firmware_template/1)
-      end
-    end)
-  end
-
-  defp apply_action(%{assigns: %{product: product}} = socket, :upload, _params) do
-    socket
-    |> page_title("Upload Firmware - #{product.name}")
-    |> assign(:error_message, nil)
-    |> assign(:error_code, nil)
-    |> allow_upload(:firmware,
-      accept: ~w(.fw),
-      max_entries: 1,
-      auto_upload: true,
-      max_file_size: max_file_size(),
-      progress: &handle_progress/3
-    )
-    |> render_with(&upload_firmware_template/1)
+    |> assign(:org_keys, Accounts.list_org_keys(scope))
+    |> render_with(&show_firmware_template/1)
   end
 
   # A phx-change handler is required when using live uploads.
   @impl Phoenix.LiveView
   def handle_event("validate-firmware", _, socket), do: {:noreply, socket}
 
-  @impl Phoenix.LiveView
   def handle_event("paginate", %{"page" => page_num}, socket) do
     params = %{"page_number" => page_num}
 
@@ -92,7 +74,6 @@ defmodule NervesHubWeb.Live.Firmware do
     |> noreply()
   end
 
-  @impl Phoenix.LiveView
   def handle_event("set-paginate-opts", %{"page-size" => page_size}, socket) do
     params = %{"page_size" => page_size, "page_number" => 1}
 
@@ -103,7 +84,6 @@ defmodule NervesHubWeb.Live.Firmware do
 
   # Handles event of user clicking the same field that is already sorted
   # For this case, we switch the sorting direction of same field
-  @impl Phoenix.LiveView
   def handle_event("sort", %{"sort" => value}, %{assigns: %{current_sort: current_sort}} = socket)
       when value == current_sort do
     %{sort_direction: sort_direction} = socket.assigns
@@ -119,7 +99,6 @@ defmodule NervesHubWeb.Live.Firmware do
   end
 
   # User has clicked a new column to sort
-  @impl Phoenix.LiveView
   def handle_event("sort", %{"sort" => value}, socket) do
     new_params = %{sort: value}
 
@@ -128,17 +107,15 @@ defmodule NervesHubWeb.Live.Firmware do
     |> noreply()
   end
 
-  @impl Phoenix.LiveView
   def handle_event("firmware-selected", _, socket) do
     {:noreply, socket}
   end
 
   # the delete handler for the list page
-  @impl Phoenix.LiveView
   def handle_event("delete-firmware", %{"firmware_uuid" => uuid}, socket) do
-    authorized!(:"firmware:delete", socket.assigns.org_user)
+    authorized!(:"firmware:delete", socket.assigns.current_scope)
 
-    {:ok, firmware} = Firmwares.get_firmware_by_product_and_uuid(socket.assigns.product, uuid)
+    {:ok, firmware} = Firmwares.get_firmware_by_uuid(socket.assigns.current_scope, uuid)
 
     case Firmwares.delete_firmware(firmware) do
       {:ok, _} ->
@@ -147,48 +124,89 @@ defmodule NervesHubWeb.Live.Firmware do
         |> put_flash(:info, "Firmware successfully deleted")
         |> noreply()
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         error_feedback(socket, changeset)
+        |> noreply()
     end
   end
 
   # the delete handler for the show page
-  @impl Phoenix.LiveView
   def handle_event("delete-firmware", _params, socket) do
-    authorized!(:"firmware:delete", socket.assigns.org_user)
+    authorized!(:"firmware:delete", socket.assigns.current_scope)
 
-    %{org: org, product: product, firmware: firmware} = socket.assigns
+    %{current_scope: scope, firmware: firmware} = socket.assigns
 
-    {:ok, firmware} = Firmwares.get_firmware_by_product_and_uuid(product, firmware.uuid)
+    {:ok, firmware} = Firmwares.get_firmware_by_uuid(scope, firmware.uuid)
 
     case Firmwares.delete_firmware(firmware) do
       {:ok, _} ->
         socket
         |> put_flash(:info, "Firmware successfully deleted")
-        |> push_patch(to: ~p"/org/#{org}/#{product}/firmware")
+        |> push_patch(to: ~p"/org/#{scope.org}/#{scope.product}/firmware")
         |> noreply()
 
       {:error, changeset} ->
         error_feedback(socket, changeset, prefix: "Error deleting firmware:")
+        |> noreply()
     end
   end
 
+  @impl Phoenix.LiveView
+  def handle_info(
+        %Broadcast{topic: "product:" <> _product_id, event: "firmware/created", payload: %{firmware: firmware}},
+        %{assigns: assigns} = socket
+      )
+      when assigns.live_action == :index do
+    if viewing_first_page?(assigns) do
+      socket
+      |> assign_firmware_with_pagination()
+      |> put_flash(
+        :notice,
+        "New firmware (#{firmware.version} - #{String.slice(firmware.uuid, 0..7)}) available for selection."
+      )
+      |> noreply()
+    else
+      socket
+      |> put_flash(
+        :notice,
+        "New firmware (#{firmware.version} - #{String.slice(firmware.uuid, 0..7)}) available for selection. Please go back to page 1 to view it."
+      )
+      |> noreply()
+    end
+  end
+
+  def handle_info(
+        %Broadcast{topic: "product:" <> _product_id, event: "firmware/deleted", payload: %{firmware: firmware}},
+        socket
+      )
+      when socket.assigns.live_action == :index do
+    socket
+    |> assign_firmware_with_pagination()
+    |> put_flash(
+      :notice,
+      "Firmware #{firmware.version} (#{String.slice(firmware.uuid, 0..7)}) has been deleted by another user."
+    )
+    |> noreply()
+  end
+
+  # Ignore all other broadcasts
+  def handle_info(_broadcast, socket) do
+    {:noreply, socket}
+  end
+
   def handle_progress(:firmware, entry, socket) do
-    authorized!(:"firmware:upload", socket.assigns.org_user)
+    authorized!(:"firmware:upload", socket.assigns.current_scope)
 
     if entry.done? do
       [filepath] =
         consume_uploaded_entries(socket, :firmware, fn %{path: path}, _entry ->
-          dest = Path.join(System.tmp_dir(), Path.basename(path))
-          File.cp!(path, dest)
-          {:ok, dest}
+          {:postpone, path}
         end)
 
-      try do
-        create_firmware(socket, filepath)
-      after
-        File.rm(filepath)
-      end
+      socket
+      |> create_firmware(filepath)
+      |> clear_completed_upload(:firmware, entry)
+      |> noreply()
     else
       {:noreply, assign(socket, status: "uploading...")}
     end
@@ -224,7 +242,7 @@ defmodule NervesHubWeb.Live.Firmware do
       stringify_keys(new_params)
       |> Enum.into(current_params)
 
-    ~p"/org/#{socket.assigns.org}/#{socket.assigns.product}/firmware?#{params}"
+    ~p"/org/#{socket.assigns.current_scope.org}/#{socket.assigns.product}/firmware?#{params}"
   end
 
   defp stringify_keys(params) do
@@ -237,13 +255,19 @@ defmodule NervesHubWeb.Live.Firmware do
     end
   end
 
+  defp viewing_first_page?(assigns) do
+    case get_in(assigns, [:params, "page_number"]) do
+      nil -> true
+      page_number -> String.to_integer(page_number) == 1
+    end
+  end
+
   defp create_firmware(socket, filepath) do
-    case Firmwares.create_firmware(socket.assigns.org, filepath) do
+    case Firmwares.create_firmware(socket.assigns.current_scope.org, filepath) do
       {:ok, _firmware} ->
         socket
         |> put_flash(:info, "Firmware uploaded successfully")
-        |> push_patch(to: ~p"/org/#{socket.assigns.org}/#{socket.assigns.product}/firmware")
-        |> noreply()
+        |> push_patch(to: ~p"/org/#{socket.assigns.current_scope.org}/#{socket.assigns.product}/firmware")
 
       {:error, :no_public_keys} ->
         error_feedback(
@@ -258,14 +282,15 @@ defmodule NervesHubWeb.Live.Firmware do
        %Ecto.Changeset{
          errors: [product_id: {"can't be blank", [validation: :required]}]
        }} ->
-        error_feedback(socket, "No matching product could be found.")
+        error_feedback(
+          socket,
+          "No matching product could be found. Please check that your Nerves application product name (`:app` or `:name` in `mix.exs`) matches your #{Application.get_env(:nerves_hub, :web_title_suffix)} product name."
+        )
 
       {:error,
        %Ecto.Changeset{
          errors: [
-           uuid:
-             {"has already been taken",
-              [constraint: :unique, constraint_name: "firmwares_product_id_uuid_index"]}
+           uuid: {"has already been taken", [constraint: :unique, constraint_name: "firmwares_product_id_uuid_index"]}
          ]
        } = _changeset} ->
         error_feedback(
@@ -292,13 +317,15 @@ defmodule NervesHubWeb.Live.Firmware do
 
     socket
     |> put_flash(:error, error_message)
-    |> noreply()
   end
 
   defp error_feedback(socket, message, _opts) do
     socket
     |> put_flash(:error, message)
-    |> noreply()
+  end
+
+  defp clear_completed_upload(socket, upload_name, entry) do
+    Phoenix.LiveView.Upload.unregister_completed_entry_upload(socket, socket.assigns[:uploads][upload_name], entry.ref)
   end
 
   defp format_file_size(size) do
@@ -315,6 +342,6 @@ defmodule NervesHubWeb.Live.Firmware do
   end
 
   defp max_file_size() do
-    Application.get_env(:nerves_hub, NervesHub.Firmwares.Upload, [])[:max_size]
+    Application.get_env(:nerves_hub, Upload, [])[:max_size]
   end
 end

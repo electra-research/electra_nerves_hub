@@ -4,29 +4,14 @@ defmodule NervesHubWeb.Live.Product.SettingsTest do
   alias NervesHub.Fixtures
   alias NervesHub.Products
 
-  describe "update product" do
-    test "delta firmware updates", %{conn: conn, org: org, user: user} do
-      product = Fixtures.product_fixture(user, org, %{delta_updatable: false})
-      refute product.delta_updatable
-
-      conn
-      |> visit("/org/#{org.name}/#{product.name}/settings")
-      |> assert_has("h1", text: "Product Settings")
-      |> check("Enable delta firmware updates")
-
-      product = NervesHub.Repo.reload(product)
-      assert product.delta_updatable
-    end
-  end
-
   describe "delete product" do
     test "soft deletes the product", %{conn: conn, org: org, user: user} do
-      product = Fixtures.product_fixture(user, org, %{delta_updatable: false})
+      product = Fixtures.product_fixture(user, org)
 
       conn
       |> visit("/org/#{org.name}/#{product.name}/settings")
       |> assert_has("h1", text: "Product Settings")
-      |> click_button("Remove Product")
+      |> click_button("Delete product")
       |> assert_has("div", text: "Product deleted successfully.")
       |> assert_path("/org/#{org.name}")
 
@@ -37,32 +22,28 @@ defmodule NervesHubWeb.Live.Product.SettingsTest do
 
   describe "shared secrets" do
     setup do
-      Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket,
-        shared_secrets: [enabled: false]
-      )
+      Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket, shared_secrets: [enabled: false])
     end
 
     test "shared secrets not enabled", %{conn: conn, org: org, user: user} do
-      Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket,
-        shared_secrets: [enabled: false]
-      )
+      Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket, shared_secrets: [enabled: false])
 
       product = Fixtures.product_fixture(user, org, %{})
 
       conn
       |> visit("/org/#{org.name}/#{product.name}/settings")
-      |> assert_has("p", text: "This extension hasn't been enabled for this server.")
+      |> assert_has("p", text: "Shared Secret authentication hasn't been enabled for your platform.")
     end
 
     test "add shared secret", %{conn: conn, org: org, user: user} do
       Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket, shared_secrets: [enabled: true])
 
-      product = Fixtures.product_fixture(user, org, %{delta_updatable: false})
+      product = Fixtures.product_fixture(user, org)
 
       conn =
         conn
         |> visit("/org/#{org.name}/#{product.name}/settings")
-        |> click_button("Add your first Shared Secret.")
+        |> click_button("Create a Shared Secret")
 
       for ss <- Products.load_shared_secret_auth(product).shared_secret_auths do
         assert_has(conn, "td", text: ss.key)
@@ -72,7 +53,7 @@ defmodule NervesHubWeb.Live.Product.SettingsTest do
     test "deactivate shared secret", %{conn: conn, org: org, user: user} do
       Application.put_env(:nerves_hub, NervesHubWeb.DeviceSocket, shared_secrets: [enabled: true])
 
-      product = Fixtures.product_fixture(user, org, %{delta_updatable: false})
+      product = Fixtures.product_fixture(user, org)
 
       {:ok, _} = Products.create_shared_secret_auth(product)
 
@@ -87,7 +68,7 @@ defmodule NervesHubWeb.Live.Product.SettingsTest do
       |> tap(fn conn ->
         for ss <- Products.load_shared_secret_auth(product).shared_secret_auths do
           refute is_nil(ss.deactivated_at)
-          assert_has(conn, ".deactivated", text: Date.to_string(ss.deactivated_at))
+          assert_has(conn, "span", text: Date.to_string(ss.deactivated_at))
         end
       end)
     end

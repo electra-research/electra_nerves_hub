@@ -43,8 +43,10 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
   ]
 
   def tab_params(_params, _uri, socket) do
+    time_frame = Map.get(socket.assigns, :time_frame, @default_time_frame)
+
     socket
-    |> assign(:time_frame, @default_time_frame)
+    |> assign(:time_frame, time_frame)
     |> assign(:time_frame_opts, @time_frame_opts)
     |> assign(:latest_metrics, Metrics.get_latest_metric_set(socket.assigns.device.id))
     |> assign_charts()
@@ -70,15 +72,13 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
 
   def hooked_event(_event, _params, socket), do: {:cont, socket}
 
-  def hooked_info(
-        %Broadcast{event: "health_check_report"},
-        %{assigns: %{device: device}} = socket
-      ) do
+  def hooked_info(%Broadcast{event: "health_check_report"}, %{assigns: %{device: device}} = socket) do
     latest_metrics = Metrics.get_latest_metric_set(device.id)
 
     socket
     |> assign(:latest_metrics, latest_metrics)
     |> assign_metadata()
+    |> update_charts()
     |> halt()
   end
 
@@ -90,15 +90,19 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
     assigns = Map.put(assigns, :health_enabled?, health_enabled)
 
     ~H"""
-    <div class="w-full p-6">
-      <div :if={Enum.any?(@latest_metrics) && @health_enabled?} class="mb-6 w-full flex flex-col bg-zinc-900 border border-zinc-700 rounded">
+    <div
+      id="health-tab"
+      phx-mounted={JS.remove_class("opacity-0")}
+      class="transition-all duration-500 opacity-0 tab-content phx-click-loading:opacity-50 w-full p-6"
+    >
+      <div :if={Enum.any?(@latest_metrics) && @health_enabled?} class="mb-6 w-full flex flex-col bg-base-900 border border-base-700 rounded">
         <div class="flex flex-col shadow-device-details-content">
           <div class="flex pt-2 px-4 pb-4 gap-2 items-center justify-items-stretch flex-wrap">
-            <div class="grow flex flex-col h-16 py-2 px-3 rounded border-b border-emerald-500 bg-health-good">
-              <span class="text-xs text-zinc-400 tracking-wide">CPU</span>
+            <div class="grow flex flex-col h-16 py-2 px-3 rounded border-b border-success bg-health-good">
+              <span class="text-xs text-base-400 tracking-wide">CPU</span>
               <div :if={@latest_metrics["cpu_usage_percent"] && @latest_metrics["cpu_temp"]} class="flex justify-between items-end">
                 <span class="text-xl leading-[30px] text-neutral-50">{round(@latest_metrics["cpu_usage_percent"])}%</span>
-                <span class="text-base text-emerald-500">{round(@latest_metrics["cpu_temp"])}°</span>
+                <span class="text-base text-success">{round(@latest_metrics["cpu_temp"])}°</span>
               </div>
               <div :if={@latest_metrics["cpu_usage_percent"] && !@latest_metrics["cpu_temp"]} class="flex justify-between items-end">
                 <span class="text-xl leading-[30px] text-neutral-50">{round(@latest_metrics["cpu_usage_percent"])}%</span>
@@ -108,25 +112,25 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
               </div>
               <span :if={!@latest_metrics["cpu_usage_percent"] && !@latest_metrics["cpu_temp"]} class="text-xl leading-[30px] text-nerves-gray-500">NA</span>
             </div>
-            <div class="grow flex flex-col h-16 py-2 px-3 rounded border-b border-amber-500 bg-health-warning">
-              <span class="text-xs text-zinc-400 tracking-wide">Memory used</span>
+            <div class="grow flex flex-col h-16 py-2 px-3 rounded border-b border-warning bg-health-warning">
+              <span class="text-xs text-base-400 tracking-wide">Memory used</span>
               <div :if={@latest_metrics["mem_used_mb"]} class="flex justify-between items-end">
                 <span class="text-xl leading-[30px] text-neutral-50">{round(@latest_metrics["mem_used_mb"])}MB</span>
-                <span class="text-base text-amber-500">{round(@latest_metrics["mem_used_percent"])}%</span>
+                <span class="text-base text-warning">{round(@latest_metrics["mem_used_percent"])}%</span>
               </div>
               <div :if={!@latest_metrics["mem_used_mb"]} class="flex justify-between items-end">
                 <span class="text-xl leading-[30px] text-nerves-gray-500">Not reported</span>
               </div>
             </div>
             <div class="grow flex flex-col h-16 py-2 px-3 rounded border-b border-indigo-500 bg-health-neutral">
-              <span class="text-xs text-zinc-400 tracking-wide">Load avg</span>
+              <span class="text-xs text-base-400 tracking-wide">Load avg</span>
               <div :if={@latest_metrics["load_1min"] || @latest_metrics["load_5min"] || @latest_metrics["load_15min"]} class="flex justify-between items-center">
                 <span :if={@latest_metrics["load_1min"]} class="text-xl leading-[30px] text-neutral-50">{@latest_metrics["load_1min"]}</span>
                 <span :if={!@latest_metrics["load_1min"]} class="text-xl leading-[30px] text-nerves-gray-500">NA</span>
-                <span class="w-px h-4 bg-zinc-700"></span>
+                <span class="w-px h-4 bg-base-700"></span>
                 <span :if={@latest_metrics["load_5min"]} class="text-xl leading-[30px] text-neutral-50">{@latest_metrics["load_5min"]}</span>
                 <span :if={!@latest_metrics["load_5min"]} class="text-xl leading-[30px] text-nerves-gray-500">NA</span>
-                <span class="w-px h-4 bg-zinc-700"></span>
+                <span class="w-px h-4 bg-base-700"></span>
                 <span :if={@latest_metrics["load_15min"]} class="text-xl leading-[30px] text-neutral-50">{@latest_metrics["load_15min"]}</span>
                 <span :if={!@latest_metrics["load_15min"]} class="text-xl leading-[30px] text-nerves-gray-500">NA</span>
               </div>
@@ -142,8 +146,8 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
         </div>
       </div>
 
-      <div class="w-full flex flex-col bg-zinc-900 border border-zinc-700 rounded">
-        <div class="flex justify-between items-center h-14 px-4 border-b border-zinc-700">
+      <div class="w-full flex flex-col bg-base-900 border border-base-700 rounded">
+        <div class="flex justify-between items-center h-14 px-4 border-b border-base-700">
           <div class="flex items-end gap-3">
             <div class="text-base text-neutral-50 font-medium">Health over time</div>
             <div :if={@latest_metrics["timestamp"]} class="text-xs text-nerves-gray-500 tracking-wide mr-auto">
@@ -158,9 +162,9 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
               :for={{unit, amount} <- @time_frame_opts}
               type="button"
               class={[
-                "px-4 py-2 text-sm font-medium border border-base-600 first:rounded-s-lg last:rounded-e-lg hover:text-zinc-200 hover:bg-zinc-700 focus:z-10 focus:ring-0",
-                {unit, amount} != @time_frame && "text-zinc-300 bg-zinc-800",
-                {unit, amount} == @time_frame && "text-zinc-200 bg-zinc-700"
+                "px-4 py-2 text-sm font-medium border border-base-600 first:rounded-s-lg last:rounded-e-lg hover:text-base-200 hover:bg-base-700 focus:z-10 focus:ring-0",
+                {unit, amount} != @time_frame && "text-base-300 bg-base-800",
+                {unit, amount} == @time_frame && "text-base-200 bg-base-700"
               ]}
               aria-label={Integer.to_string(amount) <> " " <> unit <> if amount > 1, do: "s", else: ""}
               type="button"
@@ -175,7 +179,7 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
 
         <div class="p-10 flex flex-col gap-10">
           <div :if={Enum.empty?(@charts)} class="flex items-center justify-center p-6">
-            <span class="text-zinc-500 font-extralight">No metrics for the selected period.</span>
+            <span class="text-base-500 font-extralight">No metrics for the selected period.</span>
           </div>
 
           <div :for={chart <- @charts} :if={Enum.any?(@charts)} class="flex flex-col gap-3">
@@ -188,6 +192,8 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
                 data-unit={Jason.encode!(chart.unit)}
                 data-max={Jason.encode!(chart.max)}
                 data-min={Jason.encode!(chart.min)}
+                data-maxtime={Jason.encode!(chart.max_time)}
+                data-mintime={Jason.encode!(chart.min_time)}
                 data-metrics={Jason.encode!(chart.data)}
                 data-title={Jason.encode!(chart_title(chart))}
               >
@@ -220,10 +226,7 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
   defp standard_keys(%{firmware_metadata: nil}), do: []
 
   defp standard_keys(%{firmware_metadata: firmware_metadata}),
-    do:
-      firmware_metadata
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
+    do: firmware_metadata |> Map.keys() |> Enum.map(&to_string/1)
 
   # @doc """
   # There are four cases for chart updates:
@@ -232,8 +235,7 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
   #   - Do a push_patch to render more or less charts if custom types varies for time frames.
   #   - Update existing hooks with new data via push_event (should happen most frequent).
   # """
-  defp update_charts(%{charts: charts} = assigns) when charts == [],
-    do: assign_charts(assigns)
+  defp update_charts(%{charts: charts} = assigns) when charts == [], do: assign_charts(assigns)
 
   defp update_charts(
          %{
@@ -245,8 +247,7 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
              latest_metrics: latest_metrics,
              charts: charts
            }
-         } =
-           socket
+         } = socket
        ) do
     data = create_chart_data(device.id, time_frame, latest_metrics["size_mb"])
 
@@ -256,7 +257,7 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
 
       types(charts) != types(data) ->
         push_patch(socket,
-          to: ~p"/org/#{org}/#{product}/devices/#{device}/healthz"
+          to: ~p"/org/#{org}/#{product}/devices/#{device}/health"
         )
 
       true ->
@@ -272,8 +273,21 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
   end
 
   defp create_chart_data(device_id, {unit, _} = time_frame, memory_size) do
-    device_id
-    |> Metrics.get_device_metrics(time_frame)
+    metrics =
+      device_id
+      |> Metrics.get_device_metrics(time_frame)
+
+    %{inserted_at: max_time} =
+      Enum.max_by(metrics, & &1.inserted_at, DateTime, fn ->
+        %{inserted_at: DateTime.from_unix!(0)}
+      end)
+
+    %{inserted_at: min_time} =
+      Enum.min_by(metrics, & &1.inserted_at, DateTime, fn ->
+        %{inserted_at: DateTime.from_unix!(1)}
+      end)
+
+    metrics
     |> Enum.group_by(& &1.key)
     |> filter_and_sort()
     |> Enum.map(fn {type, metrics} ->
@@ -285,7 +299,9 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
         title: title(type),
         data: data,
         max: get_max_value(type, data, memory_size),
-        min: get_min_value(data),
+        min: get_min_value(type, data),
+        min_time: min_time,
+        max_time: max_time,
         unit: get_time_unit(time_frame)
       }
     end)
@@ -360,6 +376,8 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
         data
         |> Enum.max_by(& &1.y)
         |> Map.get(:y)
+        # Space it out a little
+        |> Kernel.+(1.0)
     end
   end
 
@@ -371,10 +389,28 @@ defmodule NervesHubWeb.Components.DevicePage.HealthTab do
     |> max(1)
   end
 
-  defp get_min_value(data) do
-    data
-    |> Enum.min_by(& &1.y)
-    |> Map.get(:y)
+  defp get_min_value(type, data) do
+    case type do
+      "load_" <> _ ->
+        0
+
+      type
+      when type in [
+             "mem_used_mb",
+             "mem_used_percent",
+             "cpu_temp",
+             "cpu_usage_percent",
+             "disk_used_percentage"
+           ] ->
+        0
+
+      _ ->
+        data
+        |> Enum.min_by(& &1.y)
+        |> Map.get(:y)
+        # Space it out a little
+        |> Kernel.-(1.0)
+    end
   end
 
   defp custom_metrics(metrics) do

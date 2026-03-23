@@ -1,6 +1,10 @@
 defmodule NervesHub.Application do
   use Application
 
+  alias NervesHub.ManagedDeployments.Distributed.OrchestratorRegistration
+  alias NervesHub.RateLimit.LogLines
+  alias NervesHub.Telemetry.Customizations
+
   require Logger
 
   def start(_type, _args) do
@@ -13,35 +17,26 @@ defmodule NervesHub.Application do
     end
 
     setup_open_telemetry()
-
-    _ =
-      :logger.add_handler(:my_sentry_handler, Sentry.LoggerHandler, %{
-        config: %{metadata: [:file, :line]}
-      })
-
-    NervesHub.Logger.attach()
-
-    topologies = Application.get_env(:libcluster, :topologies, [])
+    _ = setup_logging()
 
     children =
-      [
-        {Ecto.Migrator,
-         repos: Application.fetch_env!(:nerves_hub, :ecto_repos),
-         skip: Application.get_env(:nerves_hub, :database_auto_migrator) != true},
-        {Finch, name: Swoosh.Finch}
-      ] ++
+      [{Finch, name: Swoosh.Finch}] ++
+        ecto_migrations() ++
         NervesHub.StatsdMetricsReporter.config() ++
         [
           NervesHub.MetricsPoller.child_spec(),
-          NervesHub.RateLimit,
-          NervesHub.Repo,
-          NervesHub.ObanRepo,
+          NervesHub.RateLimit
+        ] ++
+        ecto_repos() ++
+        [
           {Phoenix.PubSub, name: NervesHub.PubSub},
-          {Cluster.Supervisor, [topologies]},
+          {Cluster.Supervisor, [libcluster_topology()]},
           {Task.Supervisor, name: NervesHub.TaskSupervisor},
-          {Oban, Application.fetch_env!(:nerves_hub, Oban)},
+          NervesHub.Logs.BatchProcessor,
+          {Oban, oban_opts()},
           NervesHubWeb.Presence,
-          NervesHub.Logs.BatchProcessor
+          {LogLines, [clean_period: to_timeout(minute: 5), key_older_than: to_timeout(hour: 1)]},
+          {PartitionSupervisor, child_spec: Task.Supervisor, name: NervesHub.AnalyticsEventsProcessing}
         ] ++
         deployments_orchestrator(deploy_env()) ++
         endpoints(deploy_env())
@@ -50,12 +45,31 @@ defmodule NervesHub.Application do
     Supervisor.start_link(children, opts)
   end
 
+  defp setup_logging() do
+    # Sentrys duplicate log handler checking (in their lib) runs before our application
+    # has started, so instead, lets just remove the handler if it exists
+    _ =
+      if Application.get_env(:sentry, :enable_logs, false) do
+        :logger.remove_handler(:sentry_log_handler)
+      end
+
+    :ok =
+      :logger.add_handler(:sentry_handler, Sentry.LoggerHandler, %{
+        config: %{metadata: [:file, :line]}
+      })
+
+    :ok =
+      :logger.add_primary_filter(:filter_ssl_handshake, {&NervesHub.Logger.ssl_log_filter/2, []})
+
+    NervesHub.Logger.attach()
+  end
+
   defp setup_open_telemetry() do
     if System.get_env("ECTO_IPV6") do
       :ok = :httpc.set_option(:ipfamily, :inet6fb4)
     end
 
-    :ok = NervesHub.Telemetry.Customizations.setup()
+    :ok = Customizations.setup()
 
     :ok = OpentelemetryBandit.setup()
     :ok = OpentelemetryPhoenix.setup(adapter: :bandit)
@@ -74,18 +88,69 @@ defmodule NervesHub.Application do
     :ok
   end
 
+  defp libcluster_topology() do
+    repo_config =
+      NervesHub.Repo.config()
+      |> Keyword.take([:hostname, :username, :password, :database, :port, :ssl])
+      |> Keyword.put(:parameters, [])
+      |> Keyword.put(:channel_name, "nerves_hub_clustering")
+
+    [
+      app: [
+        strategy: LibclusterPostgres.Strategy,
+        config: repo_config
+      ]
+    ]
+  end
+
+  defp oban_opts() do
+    config = Application.fetch_env!(:nerves_hub, Oban)
+
+    case Application.get_env(:nerves_hub, :app) do
+      "device" ->
+        Keyword.put(config, :queues, [])
+
+      _ ->
+        config
+    end
+  end
+
+  defp ecto_migrations() do
+    [
+      Supervisor.child_spec(
+        {Ecto.Migrator,
+         repos: [NervesHub.Repo], skip: Application.get_env(:nerves_hub, :database_auto_migrator) != true},
+        id: :repo_migrator
+      ),
+      Supervisor.child_spec(
+        {Ecto.Migrator,
+         repos: [NervesHub.AnalyticsRepo], skip: Application.get_env(:nerves_hub, :analytics_auto_migrator) != true},
+        id: :analytics_repo_migrator
+      )
+    ]
+  end
+
+  defp ecto_repos() do
+    [NervesHub.Repo] ++
+      if Application.get_env(:nerves_hub, :analytics_enabled) do
+        [NervesHub.AnalyticsRepo]
+      else
+        []
+      end
+  end
+
   defp deployments_orchestrator("test"), do: []
 
   # Only run the `ProcessHub` supervisor on the `web` or `all` nodes only.
   defp deployments_orchestrator(_) do
     case Application.get_env(:nerves_hub, :app) do
-      ["device"] ->
+      "device" ->
         []
 
       _ ->
         [
           ProcessHub.child_spec(%ProcessHub{hub_id: :deployment_orchestrators}),
-          NervesHub.ManagedDeployments.Distributed.OrchestratorRegistration
+          OrchestratorRegistration
         ]
     end
   end

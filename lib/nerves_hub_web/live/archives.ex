@@ -1,11 +1,11 @@
 defmodule NervesHubWeb.Live.Archives do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
   alias NervesHub.Accounts
   alias NervesHub.Archives
-
   alias NervesHubWeb.Components.Pager
   alias NervesHubWeb.Components.Sorting
+  alias Phoenix.LiveView.Upload
 
   embed_templates("archive_templates/*")
 
@@ -13,7 +13,9 @@ defmodule NervesHubWeb.Live.Archives do
 
   @impl Phoenix.LiveView
   def mount(_params, _session, socket) do
-    {:ok, socket}
+    socket
+    |> assign(:product, socket.assigns.current_scope.product)
+    |> ok()
   end
 
   @impl Phoenix.LiveView
@@ -28,7 +30,7 @@ defmodule NervesHubWeb.Live.Archives do
     |> page_title("Archives - #{product.name}")
     |> sidebar_tab(:archives)
     |> assign(:archives, Archives.all_by_product(product))
-    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.org))
+    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.current_scope))
     |> assign(:params, unsigned_params)
     |> allow_upload(:archive,
       accept: ~w(.fw),
@@ -38,45 +40,18 @@ defmodule NervesHubWeb.Live.Archives do
       progress: &handle_progress/3
     )
     |> assign_archives_with_pagination()
-    |> then(fn socket ->
-      if Application.get_env(:nerves_hub, :new_ui) && socket.assigns[:new_ui] do
-        render_with(socket, &list_archives_template_new/1)
-      else
-        render_with(socket, &list_archives_template/1)
-      end
-    end)
+    |> render_with(&list_archives_template/1)
   end
 
-  defp apply_action(%{assigns: %{product: product}} = socket, :show, %{
-         "archive_uuid" => archive_uuid
-       }) do
+  defp apply_action(%{assigns: %{product: product}} = socket, :show, %{"archive_uuid" => archive_uuid}) do
     archive = Archives.get_by_product_and_uuid!(product, archive_uuid)
 
     socket
     |> page_title("Archive #{archive_uuid} - #{product.name}")
+    |> sidebar_tab(:archives)
     |> assign(:archive, archive)
-    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.org))
-    |> then(fn socket ->
-      if Application.get_env(:nerves_hub, :new_ui) && socket.assigns[:new_ui] do
-        render_with(socket, &show_archive_template_new/1)
-      else
-        render_with(socket, &show_archive_template/1)
-      end
-    end)
-  end
-
-  defp apply_action(%{assigns: %{product: product}} = socket, :upload, _params) do
-    socket
-    |> page_title("Upload Archive - #{product.name}")
-    |> assign(:error_message, nil)
-    |> allow_upload(:archive,
-      accept: ~w(.fw),
-      max_entries: 1,
-      auto_upload: true,
-      max_file_size: max_file_size(),
-      progress: &handle_progress/3
-    )
-    |> render_with(&upload_archive_template/1)
+    |> assign(:org_keys, Accounts.list_org_keys(socket.assigns.current_scope))
+    |> render_with(&show_archive_template/1)
   end
 
   # A phx-change handler is required when using live uploads.
@@ -134,7 +109,7 @@ defmodule NervesHubWeb.Live.Archives do
 
   # the delete handler for the list page
   def handle_event("delete-archive", %{"archive_uuid" => uuid}, socket) do
-    authorized!(:"archive:delete", socket.assigns.org_user)
+    authorized!(:"archive:delete", socket.assigns.current_scope)
 
     {:ok, archive} = Archives.get(socket.assigns.product, uuid)
 
@@ -147,13 +122,14 @@ defmodule NervesHubWeb.Live.Archives do
 
       {:error, changeset} ->
         error_feedback(socket, changeset)
+        |> noreply()
     end
   end
 
   def handle_event("delete-archive", _params, socket) do
-    authorized!(:"archive:delete", socket.assigns.org_user)
+    authorized!(:"archive:delete", socket.assigns.current_scope)
 
-    %{org: org, product: product, archive: archive} = socket.assigns
+    %{current_scope: %{org: org}, product: product, archive: archive} = socket.assigns
 
     {:ok, archive} = Archives.get(socket.assigns.product, archive.uuid)
 
@@ -170,25 +146,23 @@ defmodule NervesHubWeb.Live.Archives do
           |> Enum.map_join(", ", fn {_field, {message, _info}} -> message end)
 
         error_feedback(socket, "The archive couldn't be deleted: #{message}.")
+        |> noreply()
     end
   end
 
   def handle_progress(:archive, entry, socket) do
-    authorized!(:"archive:upload", socket.assigns.org_user)
+    authorized!(:"archive:upload", socket.assigns.current_scope)
 
     if entry.done? do
       [filepath] =
         consume_uploaded_entries(socket, :archive, fn %{path: path}, _entry ->
-          dest = Path.join(System.tmp_dir(), Path.basename(path))
-          File.cp!(path, dest)
-          {:ok, dest}
+          {:postpone, path}
         end)
 
-      try do
-        create_archive(socket, filepath)
-      after
-        File.rm(filepath)
-      end
+      socket
+      |> create_archive(filepath)
+      |> clear_completed_upload(:archive, entry)
+      |> noreply()
     else
       {:noreply, socket}
     end
@@ -224,7 +198,7 @@ defmodule NervesHubWeb.Live.Archives do
       stringify_keys(new_params)
       |> Enum.into(current_params)
 
-    ~p"/org/#{socket.assigns.org}/#{socket.assigns.product}/archives?#{params}"
+    ~p"/org/#{socket.assigns.current_scope.org}/#{socket.assigns.product}/archives?#{params}"
   end
 
   defp stringify_keys(params) do
@@ -242,8 +216,7 @@ defmodule NervesHubWeb.Live.Archives do
       {:ok, _firmware} ->
         socket
         |> put_flash(:info, "Archive uploaded successfully.")
-        |> push_patch(to: ~p"/org/#{socket.assigns.org}/#{socket.assigns.product}/archives")
-        |> noreply()
+        |> push_patch(to: ~p"/org/#{socket.assigns.current_scope.org}/#{socket.assigns.product}/archives")
 
       {:error, :no_public_keys} ->
         error_feedback(
@@ -275,9 +248,11 @@ defmodule NervesHubWeb.Live.Archives do
   end
 
   defp error_feedback(socket, message) do
-    socket
-    |> put_flash(:error, message)
-    |> noreply()
+    put_flash(socket, :error, message)
+  end
+
+  defp clear_completed_upload(socket, upload_name, entry) do
+    Upload.unregister_completed_entry_upload(socket, socket.assigns[:uploads][upload_name], entry.ref)
   end
 
   defp format_signed(%{org_key_id: org_key_id}, org_keys) do

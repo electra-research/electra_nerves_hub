@@ -1,12 +1,11 @@
 defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
   alias NervesHub.Certificate
   alias NervesHub.Devices
   alias NervesHub.Devices.CACertificate
   alias NervesHub.Devices.CACertificate.CSR
   alias NervesHub.Products
-
   alias NervesHubWeb.Components.CAHelpers
   alias NervesHubWeb.Components.Utils
   alias NervesHubWeb.LayoutView.DateTimeFormat
@@ -21,6 +20,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
   @impl Phoenix.LiveView
   def handle_params(params, _url, socket) do
     socket
+    |> assign(:org, socket.assigns.current_scope.org)
     |> apply_action(socket.assigns.live_action, params)
     |> noreply()
   end
@@ -29,11 +29,12 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
     socket
     |> page_title("Certificate Authorities - #{socket.assigns.org.name}")
     |> list_certificates()
+    |> sidebar_tab(:certificates)
     |> render_with(&list_cas_template/1)
   end
 
-  defp apply_action(socket, :new, _params) do
-    products = Products.get_products_by_user_and_org(socket.assigns.user, socket.assigns.org)
+  defp apply_action(%{assigns: %{current_scope: scope}} = socket, :new, _params) do
+    products = Products.get_products(scope)
 
     socket
     |> page_title("Add Certificate Authorities - #{socket.assigns.org.name}")
@@ -43,22 +44,26 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
     |> assign(:show_jitp_form, false)
     |> allow_upload(:cert, accept: ~w(.pem), max_entries: 1, auto_upload: true)
     |> allow_upload(:csr, accept: ~w(.crt), max_entries: 1, auto_upload: true)
+    |> sidebar_tab(:certificates)
     |> render_with(&new_ca_template/1)
   end
 
-  defp apply_action(socket, :edit, %{"serial" => serial}) do
-    products = Products.get_products_by_user_and_org(socket.assigns.user, socket.assigns.org)
+  defp apply_action(%{assigns: %{current_scope: scope}} = socket, :edit, %{"serial" => serial}) do
+    products = Products.get_products(scope)
 
-    with {:ok, cert} <- Devices.get_ca_certificate_by_serial(serial),
-         changeset <- Devices.CACertificate.changeset(cert, %{}) do
-      socket
-      |> page_title("Edit Certificate Authorities - #{socket.assigns.org.name}")
-      |> assign(:products, products)
-      |> assign(:serial, cert.serial)
-      |> assign(:form, to_form(changeset))
-      |> assign(:show_jitp_form, show_jitp_form(changeset))
-      |> render_with(&edit_ca_template/1)
-    else
+    case Devices.get_ca_certificate_by_serial(serial) do
+      {:ok, cert} ->
+        changeset = Devices.CACertificate.changeset(cert, %{})
+
+        socket
+        |> page_title("Edit Certificate Authorities - #{socket.assigns.org.name}")
+        |> assign(:products, products)
+        |> assign(:serial, cert.serial)
+        |> assign(:form, to_form(changeset))
+        |> assign(:show_jitp_form, show_jitp_form(changeset))
+        |> sidebar_tab(:certificates)
+        |> render_with(&edit_ca_template/1)
+
       {:error, :not_found} ->
         socket
         |> put_flash(:error, "Certificate Authority not found")
@@ -68,7 +73,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
 
   @impl Phoenix.LiveView
   def handle_event("delete-certificate-authority", %{"certificate_serial" => serial}, socket) do
-    authorized!(:"certificate_authority:delete", socket.assigns.org_user)
+    authorized!(:"certificate_authority:delete", socket.assigns.current_scope)
 
     with {:ok, ca_certificate} <-
            Devices.get_ca_certificate_by_org_and_serial(socket.assigns.org, serial),
@@ -89,7 +94,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
   end
 
   def handle_event("update_certificate_authority", %{"ca_certificate" => ca_certificate}, socket) do
-    authorized!(:"certificate_authority:update", socket.assigns.org_user)
+    authorized!(:"certificate_authority:update", socket.assigns.current_scope)
 
     with {:ok, cert} <- Devices.get_ca_certificate_by_serial(socket.assigns.serial),
          {:ok, params} <- maybe_delete_jitp(ca_certificate),
@@ -118,22 +123,22 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
   end
 
   def handle_event("add_certificate_authority", %{"ca_certificate" => params}, socket) do
-    authorized!(:"certificate_authority:create", socket.assigns.org_user)
+    authorized!(:"certificate_authority:create", socket.assigns.current_scope)
 
     socket = set_show_jitp_form(socket, params)
 
     with {:ok, cert} <- uploaded_cert(socket),
          {:ok, csr} <- uploaded_csr(socket),
          :ok <- CSR.validate_csr(socket.assigns.registration_code, cert, csr),
-         serial <- Certificate.get_serial_number(cert),
-         aki <- Certificate.get_aki(cert),
-         ski <- Certificate.get_ski(cert),
+         serial = Certificate.get_serial_number(cert),
+         aki = Certificate.get_aki(cert),
+         ski = Certificate.get_ski(cert),
          {cert_not_before, cert_not_after} = cert_validity <- Certificate.get_validity(cert),
          {_csr_not_before, _csr_not_after} = csr_validity <- Certificate.get_validity(csr),
          :ok <- check_validity(cert_validity),
          :ok <- check_validity(csr_validity),
          {:ok, params} <- maybe_delete_jitp(params),
-         params <- %{
+         params = %{
            serial: serial,
            aki: aki,
            ski: ski,
@@ -156,8 +161,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
         {:noreply, put_flash(socket, :error, "Certificate Authority files required")}
 
       {:error, :not_found} ->
-        {:noreply,
-         put_flash(socket, :error, "Certificate Authority pem file is empty or invalid")}
+        {:noreply, put_flash(socket, :error, "Certificate Authority pem file is empty or invalid")}
 
       {:error, :cert_expired} ->
         {:noreply, put_flash(socket, :error, "Certificate is expired")}
@@ -204,7 +208,7 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
   def check_validity({not_before, not_after}) do
     now = DateTime.utc_now()
     is_before? = DateTime.compare(now, not_before) != :gt
-    is_after? = DateTime.compare(now, not_after) == :gt
+    is_after? = DateTime.after?(now, not_after)
 
     if is_before? or is_after? do
       {:error, :cert_expired}
@@ -258,6 +262,5 @@ defmodule NervesHubWeb.Live.Org.CertificateAuthorities do
   defp upload_error_to_string(:too_large), do: "The file is too large"
   defp upload_error_to_string(:not_accepted), do: "You have selected an unrecognized file type"
 
-  defp upload_error_to_string(:external_client_failure),
-    do: "Something went wrong, please contact support"
+  defp upload_error_to_string(:external_client_failure), do: "Something went wrong, please contact support"
 end

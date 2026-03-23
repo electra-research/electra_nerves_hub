@@ -5,22 +5,49 @@ defmodule NervesHub.Products do
 
   import Ecto.Query, warn: false
 
-  alias NervesHub.Repo
-
   alias NervesHub.Accounts.Org
   alias NervesHub.Accounts.OrgUser
+  alias NervesHub.Accounts.Scope
   alias NervesHub.Accounts.User
+  alias NervesHub.Devices.Device
   alias NervesHub.Extensions
   alias NervesHub.Products.Product
   alias NervesHub.Products.SharedSecretAuth
-  alias NervesHub.Workers.FirmwareDeltaBuilder
-
+  alias NervesHub.Repo
   alias NimbleCSV.RFC4180, as: CSV
 
   @csv_certs_sep "\n\n"
   @csv_header ["identifier", "description", "tags", "product", "org", "certificates"]
 
   def __csv_header__(), do: @csv_header
+
+  def get_by_name!(%Scope{} = current_scope, product_name) do
+    Product
+    |> join(:left, [p], o in assoc(p, :org))
+    |> join(:left, [p, o], ou in assoc(o, :org_users))
+    |> where([p], is_nil(p.deleted_at))
+    |> where([_, o], is_nil(o.deleted_at))
+    |> where([_, _, ou], is_nil(ou.deleted_at))
+    |> where([p], p.name == ^product_name)
+    |> where([_, o], o.id == ^current_scope.org.id)
+    |> where([_, _, ou], ou.user_id == ^current_scope.user.id)
+    |> Repo.one!()
+  end
+
+  @spec get_products(Scope.t()) :: [Product.t()]
+  def get_products(%Scope{user: user, org: org}) do
+    from(
+      p in Product,
+      full_join: ou in OrgUser,
+      on: p.org_id == ou.org_id,
+      where:
+        p.org_id == ^org.id and ou.user_id == ^user.id and
+          ou.role in ^User.role_or_higher(:view),
+      group_by: p.id
+    )
+    |> Repo.exclude_deleted()
+    |> Repo.all()
+  end
 
   @spec get_products_by_user_and_org(User.t(), Org.t()) :: [Product.t()]
   def get_products_by_user_and_org(%User{id: user_id}, %Org{id: org_id}) do
@@ -72,6 +99,12 @@ defmodule NervesHub.Products do
     end
   end
 
+  @spec get_product_by_name!(Scope.t(), String.t()) :: Product.t()
+  def get_product_by_name!(%Scope{org: org}, name) do
+    get_product_by_org_id_and_name_query(org.id, name)
+    |> Repo.one!()
+  end
+
   @spec get_product_by_org_id_and_name!(pos_integer(), String.t()) :: Product.t()
   def get_product_by_org_id_and_name!(org_id, name) do
     get_product_by_org_id_and_name_query(org_id, name)
@@ -96,63 +129,33 @@ defmodule NervesHub.Products do
   end
 
   @doc """
+  Gets a single product that a user has access to.
+
+  If the product is not found or the user does not have access, returns `{:error, :not_found}`.
+  """
+  @spec get_by_id(Scope.t(), pos_integer) :: {:ok, Product.t()} | {:error, :not_found}
+  def get_by_id(%Scope{user: user}, id) do
+    Product
+    |> join(:inner, [p], o in assoc(p, :org))
+    |> join(:inner, [_, o], ou in assoc(o, :org_users))
+    |> where([p], is_nil(p.deleted_at))
+    |> where([_, o], is_nil(o.deleted_at))
+    |> where(id: ^id)
+    |> where([_, _, ou], ou.user_id == ^user.id)
+    |> Repo.one()
+    |> case do
+      nil -> {:error, :not_found}
+      product -> {:ok, product}
+    end
+  end
+
+  @doc """
   Creates a product.
   """
   @spec create_product(map()) :: {:ok, Product.t()} | {:error, Ecto.Changeset.t()}
   def create_product(params) do
     Product.changeset(%Product{}, params)
     |> Repo.insert()
-  end
-
-  @doc """
-  Toggle the delta updates attribute for a product.
-
-  ## Examples
-
-      iex> toggle_delta_updates(product)
-      {:ok, %Product{}}
-
-  """
-  @spec toggle_delta_updates(Product.t()) :: {:ok, Product.t()} | {:error, Ecto.Changeset.t()}
-  def toggle_delta_updates(%Product{} = product) do
-    update_product(product, %{delta_updatable: !product.delta_updatable})
-  end
-
-  @doc """
-  Updates a product.
-
-  ## Examples
-
-      iex> update_product(product, %{field: new_value})
-      {:ok, %Product{}}
-
-      iex> update_product(product, %{field: bad_value})
-      {:error, %Ecto.Changeset{}}
-
-  """
-  @spec update_product(Product.t(), map()) :: {:ok, Product.t()} | {:error, Ecto.Changeset.t()}
-  def update_product(%Product{} = product, attrs) do
-    result =
-      product
-      |> Product.update_changeset(attrs)
-      |> Repo.update()
-
-    case result do
-      {:ok, %{delta_updatable: true} = new_product} when product.delta_updatable == false ->
-        :ok = trigger_delta_generation_for_product(new_product)
-        result
-
-      _ ->
-        result
-    end
-  end
-
-  defp trigger_delta_generation_for_product(product) do
-    NervesHub.Devices.get_device_firmware_for_delta_generation_by_product(product.id)
-    |> Enum.uniq()
-    |> Enum.each(fn {source_id, target_id} ->
-      FirmwareDeltaBuilder.start(source_id, target_id)
-    end)
   end
 
   @doc """
@@ -247,10 +250,24 @@ defmodule NervesHub.Products do
 
   @spec devices_csv(Product.t()) :: binary()
   def devices_csv(%Product{} = product) do
-    product = Repo.preload(product, [:org, devices: :device_certificates])
-    data = Enum.map(product.devices, &device_csv_line(&1, product))
+    product = Repo.preload(product, [:org])
 
-    [@csv_header | data]
+    {:ok, devices} =
+      Repo.transact(fn ->
+        devices =
+          Device
+          |> where([d], d.product_id == ^product.id)
+          |> Repo.exclude_deleted()
+          |> Repo.stream(max_rows: 100)
+          |> Stream.chunk_every(100)
+          |> Stream.flat_map(&Repo.preload(&1, :device_certificates))
+          |> Stream.map(&device_csv_line(&1, product))
+          |> Enum.to_list()
+
+        {:ok, devices}
+      end)
+
+    [@csv_header | devices]
     |> CSV.dump_to_iodata()
     |> IO.iodata_to_binary()
   end

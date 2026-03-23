@@ -1,15 +1,19 @@
 defmodule NervesHubWeb.API.DeviceController do
   use NervesHubWeb, :api_controller
 
+  import Ecto.Query
+
   alias NervesHub.Accounts
   alias NervesHub.AuditLogs.DeviceTemplates
+  alias NervesHub.DeviceEvents
   alias NervesHub.Devices
+  alias NervesHub.Devices.Device
   alias NervesHub.Devices.DeviceCertificate
   alias NervesHub.Devices.UpdatePayload
   alias NervesHub.Firmwares
   alias NervesHub.Products
   alias NervesHub.Repo
-
+  alias NervesHubWeb.API.PaginationHelpers
   alias NervesHubWeb.Endpoint
   alias NervesHubWeb.Helpers.RoleValidateHelpers
 
@@ -31,24 +35,22 @@ defmodule NervesHubWeb.API.DeviceController do
 
   plug(:validate_role, [org: :view] when action in [:index, :show, :auth])
 
-  def index(%{assigns: %{org: org, product: product}} = conn, params) do
+  def index(%{assigns: %{current_scope: %{org: org}, product: product}} = conn, params) do
     opts = %{
-      pagination: Map.get(params, "pagination", %{}),
+      pagination: PaginationHelpers.atomize_pagination_params(Map.get(params, "pagination", %{})),
       filters: Map.get(params, "filters", %{})
     }
 
     {devices, page} =
       Devices.get_devices_by_org_id_and_product_id_with_pager(org.id, product.id, opts)
 
-    pagination = Map.take(page, [:page_number, :page_size, :total_entries, :total_pages])
-
     conn
     |> assign(:devices, devices)
-    |> assign(:pagination, pagination)
+    |> assign(:pagination, PaginationHelpers.format_pagination_meta(page))
     |> render(:index)
   end
 
-  def create(%{assigns: %{org: org, product: product}} = conn, params) do
+  def create(%{assigns: %{current_scope: %{org: org}, product: product}} = conn, params) do
     params =
       params
       |> Map.put("org_id", org.id)
@@ -71,7 +73,7 @@ defmodule NervesHubWeb.API.DeviceController do
     render(conn, :show)
   end
 
-  def delete(%{assigns: %{org: _org, device: device}} = conn, _params) do
+  def delete(%{assigns: %{device: device}} = conn, _params) do
     {:ok, _device} = Devices.delete_device(device)
 
     send_resp(conn, :no_content, "")
@@ -87,7 +89,7 @@ defmodule NervesHubWeb.API.DeviceController do
     end
   end
 
-  def auth(%{assigns: %{org: org}} = conn, %{"certificate" => cert64}) do
+  def auth(%{assigns: %{current_scope: %{org: org}}} = conn, %{"certificate" => cert64}) do
     with {:ok, cert_pem} <- Base.decode64(cert64),
          {:ok, cert} <- X509.Certificate.from_pem(cert_pem),
          {:ok, %DeviceCertificate{device_id: device_id}} <-
@@ -105,10 +107,8 @@ defmodule NervesHubWeb.API.DeviceController do
     end
   end
 
-  def reboot(%{assigns: %{user: user, device: device}} = conn, _params) do
-    DeviceTemplates.audit_reboot(user, device)
-
-    _ = Endpoint.broadcast_from(self(), "device:#{device.id}", "reboot", %{})
+  def reboot(%{assigns: %{current_scope: %{user: user}, device: device}} = conn, _params) do
+    DeviceEvents.reboot(device, user)
 
     send_resp(conn, :no_content, "")
   end
@@ -119,8 +119,12 @@ defmodule NervesHubWeb.API.DeviceController do
     send_resp(conn, :no_content, "")
   end
 
-  def code(%{assigns: %{device: device}} = conn, %{"body" => body}) do
-    body
+  def code(%{assigns: %{device: device}} = conn, params)
+      when is_map_key(params, "code")
+      when is_map_key(params, "body") do
+    code = params["code"] || params["body"]
+
+    code
     |> String.graphemes()
     |> Enum.each(fn character ->
       Endpoint.broadcast_from!(self(), "device:console:#{device.id}", "dn", %{
@@ -133,7 +137,11 @@ defmodule NervesHubWeb.API.DeviceController do
     send_resp(conn, :no_content, "")
   end
 
-  def upgrade(%{assigns: %{device: device, user: user}} = conn, %{"uuid" => uuid}) do
+  def code(_conn, _params) do
+    raise NervesHubWeb.InvalidRequestError, info: "code or body parameter required"
+  end
+
+  def upgrade(%{assigns: %{device: device, current_scope: %{user: user}}} = conn, %{"uuid" => uuid}) do
     {:ok, firmware} = Firmwares.get_firmware_by_product_and_uuid(device.product, uuid)
 
     {:ok, url} = Firmwares.get_firmware_url(firmware)
@@ -160,7 +168,7 @@ defmodule NervesHubWeb.API.DeviceController do
     send_resp(conn, :no_content, "")
   end
 
-  def penalty(%{assigns: %{device: device, user: user}} = conn, _params) do
+  def penalty(%{assigns: %{device: device, current_scope: %{user: user}}} = conn, _params) do
     case Devices.clear_penalty_box(device, user) do
       {:ok, _device} ->
         send_resp(conn, :no_content, "")
@@ -170,12 +178,12 @@ defmodule NervesHubWeb.API.DeviceController do
     end
   end
 
-  def move(%{assigns: %{device: device, user: user}} = conn, %{
+  def move(%{assigns: %{device: device, current_scope: %{user: user}}} = conn, %{
         "new_org_name" => org_name,
         "new_product_name" => product_name
       }) do
     with {:ok, move_to_org} <- Accounts.get_org_by_name(org_name),
-         _ <- RoleValidateHelpers.validate_org_user_role(conn, move_to_org, user, :manage),
+         RoleValidateHelpers.validate_org_user_role(conn, move_to_org, user, :manage),
          {:ok, product} <- Products.get_product_by_org_id_and_name(move_to_org.id, product_name) do
       case Devices.move(device, product, user) do
         {:ok, device} ->
@@ -192,12 +200,11 @@ defmodule NervesHubWeb.API.DeviceController do
     end
   end
 
-  defp preload_device(device) do
-    Repo.preload(device, [
-      :org,
-      :product,
-      :latest_connection,
-      deployment_group: [:firmware]
-    ])
+  defp preload_device(%{identifier: identifier}) do
+    Device
+    |> where(identifier: ^identifier)
+    |> Devices.join_and_preload_deployment_group_and_current_release()
+    |> preload([:org, :product, :latest_connection])
+    |> Repo.one!()
   end
 end

@@ -15,6 +15,15 @@ defmodule NervesHub.Extensions do
     critical firmware update.
   """
 
+  alias NervesHub.Devices.Device
+  alias NervesHub.Extensions.Geo
+  alias NervesHub.Extensions.Health
+  alias NervesHub.Extensions.LocalShell
+  alias NervesHub.Extensions.Logging
+  alias NervesHub.Extensions.Unsupported
+  alias NervesHub.Products.Product
+  alias Phoenix.Channel.Server, as: ChannelServer
+
   @callback handle_in(event :: String.t(), Phoenix.Channel.payload(), Phoenix.Socket.t()) ::
               {:noreply, Phoenix.Socket.t()}
               | {:noreply, Phoenix.Socket.t(), timeout() | :hibernate}
@@ -28,43 +37,66 @@ defmodule NervesHub.Extensions do
   @callback attach(Phoenix.Socket.t()) :: {:noreply, Phoenix.Socket.t()}
   @callback detach(Phoenix.Socket.t()) :: {:noreply, Phoenix.Socket.t()}
   @callback description() :: String.t()
+  @callback enabled?() :: boolean()
 
-  require Logger
-
-  @supported_extensions [:health, :geo]
-  @type extension() :: :health | :geo
+  @supported_extensions [:health, :geo, :local_shell, :logging]
+  @type extension() :: :health | :geo | :local_shell | :logging
 
   @doc """
   Get list of supported extensions as atoms with descriptive text.
   """
-  @spec list() :: [:geo | :health, ...]
+  @spec list() :: [:geo | :health | :local_shell | :logging, ...]
   def list(), do: @supported_extensions
 
-  @spec module(extension()) :: NervesHub.Extensions.Geo | NervesHub.Extensions.Health
-  def module(:health), do: NervesHub.Extensions.Health
-  def module(:geo), do: NervesHub.Extensions.Geo
+  @spec module(extension()) ::
+          Geo
+          | Health
+          | LocalShell
+          | Logging
+  def module(:geo), do: Geo
+  def module(:health), do: Health
+  def module(:local_shell), do: LocalShell
+  def module(:logging), do: Logging
 
-  @spec module(extension(), Version.t()) :: module() | :unsupported
+  @spec module(extension(), Version.t()) :: module() | Unsupported
   def module(:health, ver) do
-    cond do
-      Version.match?(ver, "~> 0.0.1") -> NervesHub.Extensions.Health
-      true -> :unsupported
+    if Version.match?(ver, "~> 0.0.1") do
+      Health
+    else
+      Unsupported
     end
   end
 
   def module(:geo, ver) do
-    cond do
-      Version.match?(ver, "~> 0.0.1") -> NervesHub.Extensions.Geo
-      true -> :unsupported
+    if Version.match?(ver, "~> 0.0.1") do
+      Geo
+    else
+      Unsupported
+    end
+  end
+
+  def module(:local_shell, ver) do
+    if Version.match?(ver, "~> 0.0.1") do
+      LocalShell
+    else
+      Unsupported
+    end
+  end
+
+  def module(:logging, ver) do
+    if Version.match?(ver, "~> 0.0.1") do
+      Logging
+    else
+      Unsupported
     end
   end
 
   def module(_key, _ver) do
-    :unsupported
+    Unsupported
   end
 
   def broadcast_extension_event(target, event, extension) do
-    Phoenix.Channel.Server.broadcast_from!(
+    ChannelServer.broadcast_from!(
       NervesHub.PubSub,
       self(),
       topic(target),
@@ -75,6 +107,6 @@ defmodule NervesHub.Extensions do
     )
   end
 
-  defp topic(%NervesHub.Devices.Device{} = device), do: "device:#{device.id}:extensions"
-  defp topic(%NervesHub.Products.Product{} = product), do: "product:#{product.id}:extensions"
+  defp topic(%Device{} = device), do: "device:#{device.id}:extensions"
+  defp topic(%Product{} = product), do: "product:#{product.id}:extensions"
 end

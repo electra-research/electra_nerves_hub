@@ -1,0 +1,83 @@
+defmodule NervesHubWeb.Live.Org.SigningKeysTest do
+  use NervesHubWeb.ConnCase.Browser, async: true
+
+  alias NervesHub.Fixtures
+
+  describe "list" do
+    test "no signing keys", %{conn: conn, user: user} do
+      org = Fixtures.org_fixture(user, %{name: "JoshCorp"})
+
+      conn
+      |> visit("/org/#{org.name}/settings/keys")
+      |> assert_has("h1", text: "Signing Keys")
+      |> assert_has("a > span", text: "How to generate a signing key")
+      |> refute_has("div .firmware-key")
+    end
+
+    test "available signing keys are listed", %{conn: conn, org: org, org_key: org_key} do
+      conn
+      |> visit("/org/#{org.name}/settings/keys")
+      |> assert_has("h3", text: org_key.name)
+    end
+  end
+
+  describe "create signing key" do
+    test "with valid data", %{conn: conn, org: org, user: user} do
+      conn
+      |> visit("/org/#{org.name}/settings/keys/new")
+      |> assert_has("h1", text: "New Signing Key")
+      |> fill_in("Name", with: "my amazing key")
+      |> fill_in("Key", with: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=")
+      |> click_button("Create Key")
+      |> assert_path("/org/#{org.name}/settings/keys")
+      |> assert_has("div", text: "Signing Key created successfully.")
+      |> assert_has("h3", text: "my amazing key")
+      |> assert_has("div", text: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=")
+      |> assert_has("div", text: "Created by: #{user.name} (#{user.email})")
+    end
+
+    test "name is trimmed if there is extra space", %{conn: conn, org: org} do
+      conn
+      |> visit("/org/#{org.name}/settings/keys/new")
+      |> assert_has("h1", text: "New Signing Key")
+      |> fill_in("Name", with: "    my    amazing     key    ")
+      |> fill_in("Key", with: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=")
+      |> click_button("Create Key")
+      |> assert_path("/org/#{org.name}/settings/keys")
+      |> assert_has("div", text: "Signing Key created successfully.")
+      |> assert_has("h3", text: "my amazing key")
+      |> assert_has("div", text: "FMBdNKrU3qlyErQtpqxsq50nGAXz03DCeEXPt2iKBe0=")
+    end
+  end
+
+  describe "delete signing key" do
+    test "removes the key", %{conn: conn, user: user} do
+      org = Fixtures.org_fixture(user, %{name: "JoshCorp"})
+
+      key1 = Fixtures.org_key_fixture(org, user)
+      key2 = Fixtures.org_key_fixture(org, user)
+
+      conn
+      |> visit("/org/#{org.name}/settings/keys")
+      |> assert_has("h1", text: "Signing Keys")
+      |> assert_has("h3", text: key1.name)
+      |> assert_has("h3", text: key2.name)
+      |> click_button("[phx-value-signing_key_id=\"#{key1.id}\"]", "Delete")
+      |> assert_has("h3", text: key2.name)
+      |> refute_has("h3", text: key1.name)
+      |> assert_has("div", text: "Signing Key deleted successfully.")
+    end
+
+    test "throws an error if the key is used by firmware", %{conn: conn, org: org, org_key: key} do
+      conn
+      |> visit("/org/#{org.name}/settings/keys")
+      |> assert_has("h1", text: "Signing Keys")
+      |> assert_has("h3", text: key.name)
+      |> click_button("[phx-value-signing_key_id=\"#{key.id}\"]", "Delete")
+      |> assert_has("div",
+        text: "Error deleting Signing Key : Firmware exists which uses the Signing Key"
+      )
+      |> assert_has("h3", text: key.name)
+    end
+  end
+end

@@ -4,12 +4,12 @@ defmodule NervesHub.Support.Archives do
   defmodule MetaParams do
     @moduledoc false
 
-    defstruct product: "nerves-hub",
+    defstruct architecture: "generic",
+              author: "me",
               description: "Manifest",
-              version: "1.0.0",
               platform: "generic",
-              architecture: "generic",
-              author: "me"
+              product: "nerves-hub",
+              version: "1.0.0"
   end
 
   def create_signed_archive(key_name, archive_name, output_name, meta_params \\ %{}) do
@@ -67,8 +67,9 @@ defmodule NervesHub.Support.Archives do
     {:ok, output_path}
   end
 
-  def make_conf(metadata) do
-    path = Path.join([System.tmp_dir(), "#{Ecto.UUID.generate()}.conf"])
+  def make_conf(metadata, opts \\ []) do
+    dir = Keyword.get(opts, :dir, System.tmp_dir())
+    path = Path.join([dir, "#{Ecto.UUID.generate()}.conf"])
     File.write!(path, build_conf(metadata))
     path
   end

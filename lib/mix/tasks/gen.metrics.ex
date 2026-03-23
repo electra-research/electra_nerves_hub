@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.NervesHub.Gen.Metrics do
+  @shortdoc "Generate metrics for one or more devices"
+
   @moduledoc """
   Generate a collection of metrics for one or more devices.
 
@@ -7,11 +9,8 @@ defmodule Mix.Tasks.NervesHub.Gen.Metrics do
       mix nerves_hub.gen.metrics device-1234
   """
 
-  @shortdoc "Generate metrics for one or more devices"
-
   use Mix.Task
 
-  alias NervesHub.Devices
   alias NervesHub.Devices.DeviceMetric
   alias NervesHub.Repo
 
@@ -20,7 +19,7 @@ defmodule Mix.Tasks.NervesHub.Gen.Metrics do
 
   @impl Mix.Task
   def run([device_identifier | _]) do
-    {:ok, %{id: device_id}} = Devices.get_by_identifier(device_identifier)
+    %{id: device_id} = Repo.get_by(Device, identifier: device_identifier)
     now = DateTime.now!("Etc/UTC") |> DateTime.truncate(:millisecond)
     a_week_ago = DateTime.add(now, -7, :day) |> DateTime.truncate(:millisecond)
 
@@ -30,9 +29,8 @@ defmodule Mix.Tasks.NervesHub.Gen.Metrics do
   @doc """
   Runs recursively until current timestamp is less than or equal to ending timestamp
   """
-  def add_metrics(device_id, current_timestamp, ending_timestamp)
-      when current_timestamp <= ending_timestamp,
-      do: save_metrics(device_id, current_timestamp)
+  def add_metrics(device_id, current_timestamp, ending_timestamp) when current_timestamp <= ending_timestamp,
+    do: save_metrics(device_id, current_timestamp)
 
   def add_metrics(device_id, current_timestamp, ending_timestamp) do
     save_metrics(device_id, current_timestamp)
@@ -52,16 +50,23 @@ defmodule Mix.Tasks.NervesHub.Gen.Metrics do
       "mem_used_percent" => Enum.random(0..100)
     }
 
-    Repo.transaction(fn ->
-      Enum.map(metrics, fn {key, val} ->
-        DeviceMetric.save_with_timestamp(%{
-          device_id: device_id,
-          key: key,
-          value: val,
-          inserted_at: current_timestamp
-        })
-        |> Repo.insert()
-      end)
+    Repo.transact(fn ->
+      inserted =
+        Enum.map(metrics, fn {key, val} ->
+          DeviceMetric.save_with_timestamp(%{
+            device_id: device_id,
+            key: key,
+            value: val,
+            inserted_at: current_timestamp
+          })
+          |> Repo.insert()
+        end)
+
+      if Enum.any?(inserted, fn {k, _v} -> k == :error end) do
+        raise "Failed to generate metrics"
+      else
+        {:ok, Enum.map(inserted, fn {_k, v} -> v end)}
+      end
     end)
   end
 end

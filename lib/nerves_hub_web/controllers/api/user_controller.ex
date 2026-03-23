@@ -2,11 +2,10 @@ defmodule NervesHubWeb.API.UserController do
   use NervesHubWeb, :api_controller
   use OpenApiSpex.ControllerSpecs
 
+  alias NervesHub.Accounts
   alias NervesHubWeb.API.Schemas.UserAuthRequest
   alias NervesHubWeb.API.Schemas.UserAuthWithNoteRequest
   alias NervesHubWeb.API.Schemas.UserResponse
-
-  alias NervesHub.Accounts
 
   tags(["Auth"])
 
@@ -18,39 +17,37 @@ defmodule NervesHubWeb.API.UserController do
     security: [%{}, %{"bearer_auth" => []}]
   )
 
-  def me(%{assigns: %{user: user}} = conn, _params) do
-    render(conn, :show, user: user)
+  def me(%{assigns: %{current_scope: scope}} = conn, _params) do
+    render(conn, :show, user: scope.user)
   end
 
   operation(:auth,
     summary: "Authenticate a user",
-    request_body:
-      {"Authentication attributes", "application/json", UserAuthRequest, required: true},
+    request_body: {"Authentication attributes", "application/json", UserAuthRequest, required: true},
     responses: [
       ok: {"User response", "application/json", UserResponse}
     ],
     security: []
   )
 
-  def auth(conn, %{"email" => email, "password" => password}) do
-    with {:ok, user} <- Accounts.authenticate(email, password) do
+  def auth(conn, assigns) do
+    with {:ok, user} <- Accounts.authenticate(assigns["email"], assigns["password"]) do
       render(conn, :show, user: user)
     end
   end
 
   operation(:login,
     summary: "Authenticate a user (deprecated)",
-    request_body:
-      {"Authentication attributes", "application/json", UserAuthWithNoteRequest, required: true},
+    request_body: {"Authentication attributes", "application/json", UserAuthWithNoteRequest, required: true},
     responses: [
       ok: {"User response", "application/json", UserResponse}
     ],
     security: []
   )
 
-  def login(conn, %{"email" => email, "password" => password, "note" => note}) do
-    with {:ok, user} <- Accounts.authenticate(email, password),
-         token <- Accounts.create_user_api_token(user, note) do
+  def login(conn, assigns) do
+    with {:ok, user} <- Accounts.authenticate(assigns["email"], assigns["password"]) do
+      token = Accounts.create_user_api_token(user, assigns["note"])
       render(conn, :show, user: user, token: token)
     end
   end

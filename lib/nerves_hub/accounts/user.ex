@@ -4,14 +4,11 @@ defmodule NervesHub.Accounts.User do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias __MODULE__
+  alias Ecto.Changeset
   alias NervesHub.Accounts.OrgUser
   alias NervesHub.Accounts.UserToken
-
   alias NervesHub.Repo
-
-  alias Ecto.Changeset
-
-  alias __MODULE__
 
   @type t :: %__MODULE__{}
 
@@ -92,8 +89,7 @@ defmodule NervesHub.Accounts.User do
     |> maybe_add_confirmed_at()
   end
 
-  defp maybe_add_confirmed_at(%{data: %{confirmed_at: confirmed_at}} = changeset)
-       when is_nil(confirmed_at) do
+  defp maybe_add_confirmed_at(%{data: %{confirmed_at: confirmed_at}} = changeset) when is_nil(confirmed_at) do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     put_change(changeset, :confirmed_at, now)
@@ -106,7 +102,6 @@ defmodule NervesHub.Accounts.User do
     |> update_change(:name, &trim/1)
     |> validate_required([:name])
     |> validate_length(:name, min: 2, max: 100)
-    |> validate_format(:name, ~r/^[a-zA-Z\'\- ]+$/, message: "has invalid character(s)")
   end
 
   defp validate_email(changeset, _opts) do

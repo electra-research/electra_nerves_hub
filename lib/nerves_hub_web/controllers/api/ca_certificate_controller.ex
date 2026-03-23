@@ -4,7 +4,6 @@ defmodule NervesHubWeb.API.CACertificateController do
 
   alias NervesHub.Certificate
   alias NervesHub.Devices
-
   alias NervesHubWeb.API.Schemas.CACertificateSchemas
 
   tags(["CA Certificates"])
@@ -24,13 +23,11 @@ defmodule NervesHubWeb.API.CACertificateController do
       ]
     ],
     responses: [
-      ok:
-        {"CA Certificate list response", "application/json",
-         CACertificateSchemas.CACertificateListResponse}
+      ok: {"CA Certificate list response", "application/json", CACertificateSchemas.CACertificateListResponse}
     ]
   )
 
-  def index(%{assigns: %{org: org}} = conn, _params) do
+  def index(%{assigns: %{current_scope: %{org: org}}} = conn, _params) do
     ca_certificates = Devices.get_ca_certificates(org)
     render(conn, :index, ca_certificates: ca_certificates)
   end
@@ -56,7 +53,7 @@ defmodule NervesHubWeb.API.CACertificateController do
     ]
   )
 
-  def show(%{assigns: %{org: org}} = conn, %{"serial" => serial}) do
+  def show(%{assigns: %{current_scope: %{org: org}}} = conn, %{"serial" => serial}) do
     with {:ok, ca_certificate} <- Devices.get_ca_certificate_by_org_and_serial(org, serial) do
       render(conn, :show, ca_certificate: ca_certificate)
     end
@@ -83,14 +80,14 @@ defmodule NervesHubWeb.API.CACertificateController do
     ]
   )
 
-  def create(%{assigns: %{org: org}} = conn, %{"cert" => cert64} = params) do
+  def create(%{assigns: %{current_scope: %{org: org}}} = conn, %{"cert" => cert64} = params) do
     with {:ok, cert_pem} <- Base.decode64(cert64),
          {:ok, cert} <- X509.Certificate.from_pem(cert_pem),
-         serial <- Certificate.get_serial_number(cert),
-         aki <- Certificate.get_aki(cert),
-         ski <- Certificate.get_ski(cert),
+         serial = Certificate.get_serial_number(cert),
+         aki = Certificate.get_aki(cert),
+         ski = Certificate.get_ski(cert),
          {not_before, not_after} <- Certificate.get_validity(cert),
-         params <- %{
+         params = %{
            serial: serial,
            aki: aki,
            ski: ski,
@@ -138,7 +135,7 @@ defmodule NervesHubWeb.API.CACertificateController do
     ]
   )
 
-  def delete(%{assigns: %{org: org}} = conn, %{"serial" => serial}) do
+  def delete(%{assigns: %{current_scope: %{org: org}}} = conn, %{"serial" => serial}) do
     with {:ok, ca_certificate} <- Devices.get_ca_certificate_by_org_and_serial(org, serial),
          {:ok, _ca_certificate} <- Devices.delete_ca_certificate(ca_certificate) do
       send_resp(conn, :no_content, "")

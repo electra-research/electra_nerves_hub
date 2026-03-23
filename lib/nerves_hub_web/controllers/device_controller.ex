@@ -2,20 +2,14 @@ defmodule NervesHubWeb.DeviceController do
   use NervesHubWeb, :controller
 
   alias NervesHub.AuditLogs
+  alias NervesHubWeb.Plugs.Device
 
-  plug(NervesHubWeb.Plugs.Device)
+  plug(Device)
 
   plug(
     :validate_role,
-    [org: :view] when action in [:console, :download_certificate, :export_audit_logs]
+    [org: :view] when action in [:download_certificate, :export_audit_logs]
   )
-
-  def console(conn, _params) do
-    conn
-    |> put_root_layout(html: {NervesHubWeb.LayoutView, :console})
-    |> put_layout(false)
-    |> render("console.html")
-  end
 
   def download_certificate(%{assigns: %{device: device}} = conn, %{"serial" => serial}) do
     case Enum.find(device.device_certificates, &(&1.serial == serial)) do
@@ -39,9 +33,7 @@ defmodule NervesHubWeb.DeviceController do
       audit_logs ->
         audit_logs = AuditLogs.format_for_csv(audit_logs)
 
-        send_download(conn, {:binary, audit_logs},
-          filename: "#{device.identifier}-audit-logs.csv"
-        )
+        send_download(conn, {:binary, audit_logs}, filename: "#{device.identifier}-audit-logs.csv")
     end
   end
 end

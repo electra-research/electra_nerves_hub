@@ -2,32 +2,29 @@ defmodule NervesHub.Scripts do
   import Ecto.Query
 
   alias Ecto.Changeset
+  alias NervesHub.Accounts.Scope
   alias NervesHub.Accounts.User
   alias NervesHub.AuditLogs.ProductTemplates
+  alias NervesHub.Filtering, as: CommonFiltering
   alias NervesHub.Products
   alias NervesHub.Products.Product
+  alias NervesHub.Repo
   alias NervesHub.Scripts.Script
 
-  alias NervesHub.Repo
+  @spec filter(Scope.t() | Product.t(), map()) :: {[Product.t()], Flop.Meta.t()}
+  def filter(scope_or_product, opts \\ %{})
 
-  @spec filter(Product.t(), map()) :: {[Product.t()], Flop.Meta.t()}
-  def filter(product, opts \\ %{}) do
-    opts = Map.reject(opts, fn {_key, val} -> is_nil(val) end)
+  def filter(%Scope{product: product}, opts) do
+    filter(product, opts)
+  end
 
-    sort = Map.get(opts, :sort, "name")
-    sort_direction = Map.get(opts, :sort_direction, "desc")
-
-    sort_opts = {String.to_existing_atom(sort_direction), String.to_atom(sort)}
-
-    flop = %Flop{
-      page: String.to_integer(Map.get(opts, :page, "1")),
-      page_size: String.to_integer(Map.get(opts, :page_size, "25"))
-    }
-
+  def filter(%Product{} = product, opts) do
     Script
-    |> where([f], f.product_id == ^product.id)
-    |> order_by(^sort_opts)
-    |> Flop.run(flop)
+    |> from()
+    |> CommonFiltering.filter(
+      product,
+      opts
+    )
   end
 
   def all_by_product(product) do
@@ -39,6 +36,10 @@ defmodule NervesHub.Scripts do
 
   def get!(id) do
     Repo.get!(Script, id)
+  end
+
+  def get_by_id!(%Scope{product: product}, id) do
+    Repo.get_by!(Script, id: id, product_id: product.id)
   end
 
   def get_by_product_and_id!(product, id) do
@@ -55,10 +56,34 @@ defmodule NervesHub.Scripts do
     end
   end
 
+  def get_by_product_and_name(product, name) do
+    case Repo.get_by(Script, name: name, product_id: product.id) do
+      nil ->
+        {:error, :not_found}
+
+      script ->
+        {:ok, script}
+    end
+  end
+
+  def get_by_product_and_name_with_id_fallback(product, name_or_id) do
+    # Try to find by name first
+    case get_by_product_and_name(product, name_or_id) do
+      {:ok, script} ->
+        {:ok, script}
+
+      {:error, :not_found} ->
+        # If not found by name, try by ID
+        case Integer.parse(name_or_id) do
+          {id, ""} -> get(product, id)
+          _ -> {:error, :not_found}
+        end
+    end
+  end
+
   @spec create(Product.t(), User.t(), map()) :: {:ok, Script.t()} | {:error, Changeset.t()}
   def create(product, user, params) do
-    %Script{}
-    |> Script.create_changeset(product, user, params)
+    Script.create_changeset(product, user, params)
     |> Repo.insert()
     |> case do
       {:ok, script} ->

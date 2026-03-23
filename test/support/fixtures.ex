@@ -18,25 +18,17 @@ defmodule NervesHub.Fixtures do
   alias NervesHub.Scripts
   alias NervesHub.Support
   alias NervesHub.Support.Fwup
+  alias Ueberauth.Auth.Credentials
+  alias Ueberauth.Auth.Extra
+  alias Ueberauth.Auth.Info
+  alias Ueberauth.Strategy.Google
+  alias X509.Certificate.Extension
+  alias X509.Certificate.Template
+  alias X509.Certificate.Validity
 
   @uploader Application.compile_env(:nerves_hub, :firmware_upload)
 
-  @org_params %{name: "Test-Org"}
-
-  @deployment_group_params %{
-    name: "Test Deployment",
-    conditions: %{
-      "version" => "<= 1.0.0",
-      "tags" => ["beta", "beta-edge"]
-    },
-    is_active: false
-  }
   @device_params %{tags: ["beta", "beta-edge"], extensions: %{health: true, geo: true}}
-  @product_params %{
-    name: "valid product",
-    delta_updatable: true,
-    extensions: %{health: true, geo: true}
-  }
 
   defdelegate reload(record), to: Repo
 
@@ -44,10 +36,34 @@ defmodule NervesHub.Fixtures do
 
   def user_params() do
     %{
-      org_name: "org-#{counter()}.com",
       email: "email-#{counter()}@smiths.com",
       name: "User #{counter_in_alpha()}",
       password: "test_password"
+    }
+  end
+
+  def org_params() do
+    %{
+      name: "SnootBoops-#{counter()}"
+    }
+  end
+
+  def product_params() do
+    %{
+      name: "auto_booper_#{counter()}",
+      extensions: %{health: true, geo: true, logging: true}
+    }
+  end
+
+  def deployment_group_params() do
+    %{
+      name: "Update the Boops - #{counter()}",
+      conditions: %{
+        "version" => "<= 1.0.0",
+        "tags" => ["beta", "beta-edge"]
+      },
+      is_active: false,
+      delta_updatable: false
     }
   end
 
@@ -76,7 +92,8 @@ defmodule NervesHub.Fixtures do
   end
 
   def org_fixture(user, params \\ %{}) do
-    params = Enum.into(params, @org_params)
+    params = Enum.into(params, org_params())
+
     {:ok, org} = Accounts.create_org(user, params)
 
     org
@@ -139,19 +156,15 @@ defmodule NervesHub.Fixtures do
   def product_fixture(%Accounts.User{}, %Accounts.Org{} = org, params) do
     params =
       params
-      |> Enum.into(@product_params)
-      |> Map.merge(%{org_id: org.id})
+      |> Enum.into(product_params())
+      |> Map.put(:org_id, org.id)
 
     {:ok, product} = Products.create_product(params)
     product
   end
 
   @spec firmware_file_fixture(OrgKey.t(), Product.t()) :: String.t()
-  def firmware_file_fixture(
-        %Accounts.OrgKey{} = org_key,
-        %Products.Product{} = product,
-        params \\ %{}
-      ) do
+  def firmware_file_fixture(%Accounts.OrgKey{} = org_key, %Products.Product{} = product, params \\ %{}) do
     {:ok, filepath} =
       Fwup.create_signed_firmware(
         org_key.name,
@@ -163,28 +176,39 @@ defmodule NervesHub.Fixtures do
     filepath
   end
 
-  def firmware_fixture(
-        %Accounts.OrgKey{org_id: org_id} = org_key,
-        %Products.Product{} = product,
-        params \\ %{}
-      ) do
-    params = Map.merge(%{dir: System.tmp_dir()}, params)
+  def firmware_fixture(%Accounts.OrgKey{org_id: org_id} = org_key, %Products.Product{} = product, params \\ %{}) do
+    dir = Map.get(params, :dir, System.tmp_dir())
     org = Repo.get!(Org, org_id)
-    filepath = firmware_file_fixture(org_key, product, params)
+    filepath = firmware_file_fixture(org_key, product, Map.put(params, :dir, dir))
     {:ok, firmware} = Firmwares.create_firmware(org, filepath)
     firmware
   end
 
-  def firmware_delta_fixture(%Firmwares.Firmware{id: source_id}, %Firmwares.Firmware{
-        id: target_id,
-        org_id: org_id
-      }) do
+  def firmware_delta_fixture(
+        %Firmwares.Firmware{id: source_id, uuid: source_uuid},
+        %Firmwares.Firmware{id: target_id, org_id: org_id, uuid: target_uuid},
+        params \\ %{}
+      ) do
+    delta_metadata = %{
+      "size" => 5,
+      "source_size" => 7,
+      "target_size" => 10
+    }
+
     {:ok, firmware_delta} =
-      Firmwares.insert_firmware_delta(%{
+      %{
         source_id: source_id,
         target_id: target_id,
-        upload_metadata: @uploader.metadata(org_id, "#{Ecto.UUID.generate()}.fw")
-      })
+        status: :completed,
+        tool_metadata: %{"delta_fwup_version" => "1.13.0"},
+        tool: "fwup",
+        size: 500,
+        source_size: 700,
+        target_size: 1000,
+        upload_metadata: Map.merge(delta_metadata, @uploader.delta_metadata(org_id, source_uuid, target_uuid))
+      }
+      |> Map.merge(params)
+      |> Firmwares.insert_firmware_delta()
 
     firmware_delta
   end
@@ -197,11 +221,7 @@ defmodule NervesHub.Fixtures do
     Firmwares.create_firmware_transfer(params)
   end
 
-  def archive_file_fixture(
-        %Accounts.OrgKey{} = org_key,
-        %Products.Product{} = product,
-        params \\ %{}
-      ) do
+  def archive_file_fixture(%Accounts.OrgKey{} = org_key, %Products.Product{} = product, params \\ %{}) do
     {:ok, filepath} =
       Support.Archives.create_signed_archive(
         org_key.name,
@@ -213,27 +233,31 @@ defmodule NervesHub.Fixtures do
     filepath
   end
 
-  def archive_fixture(
-        %Accounts.OrgKey{} = org_key,
-        %Products.Product{} = product,
-        params \\ %{}
-      ) do
+  def archive_fixture(%Accounts.OrgKey{} = org_key, %Products.Product{} = product, params \\ %{}) do
     filepath = archive_file_fixture(org_key, product, params)
     {:ok, archive} = Archives.create(product, filepath)
     archive
   end
 
-  def deployment_group_fixture(%Org{} = org, %Firmwares.Firmware{} = firmware, params \\ %{}) do
+  def deployment_group_fixture(%Firmwares.Firmware{} = firmware, params \\ %{}) do
     {is_active, params} = Map.pop(params, :is_active, false)
+    user = Map.get_lazy(params, :user, &user_fixture/0)
 
     {:ok, deployment_group} =
-      %{org_id: org.id, firmware_id: firmware.id}
-      |> Enum.into(params)
-      |> Enum.into(@deployment_group_params)
-      |> ManagedDeployments.create_deployment_group()
+      params
+      |> Enum.into(deployment_group_params())
+      |> ManagedDeployments.create_deployment_group(
+        %Product{id: firmware.product_id, org_id: firmware.org_id},
+        firmware,
+        user
+      )
 
     {:ok, deployment_group} =
-      ManagedDeployments.update_deployment_group(deployment_group, %{is_active: is_active})
+      ManagedDeployments.update_deployment_group(
+        deployment_group,
+        %{is_active: is_active},
+        user
+      )
 
     deployment_group
   end
@@ -245,12 +269,13 @@ defmodule NervesHub.Fixtures do
         params \\ %{}
       ) do
     {:ok, metadata} = Firmwares.metadata_from_firmware(firmware)
+    {fwup_version, params} = Map.pop(params, :fwup_version, "1.0.0")
 
     {:ok, device} =
       %{
         org_id: org.id,
         product_id: product.id,
-        firmware_metadata: metadata,
+        firmware_metadata: Map.put(metadata, :fwup_version, fwup_version),
         identifier: "device-#{counter()}"
       }
       |> Enum.into(params)
@@ -340,15 +365,14 @@ defmodule NervesHub.Fixtures do
     cert =
       X509.Certificate.new(public_key, subject_rdn, signer_cert, signer_key,
         template:
-          X509.Certificate.Template.new(%X509.Certificate.Template{
+          Template.new(%Template{
             serial: {:random, 20},
-            validity: X509.Certificate.Validity.new(not_before, not_after),
+            validity: Validity.new(not_before, not_after),
             hash: :sha256,
             extensions: [
-              basic_constraints: X509.Certificate.Extension.basic_constraints(false),
-              key_usage:
-                X509.Certificate.Extension.key_usage([:digitalSignature, :keyEncipherment]),
-              ext_key_usage: X509.Certificate.Extension.ext_key_usage([:clientAuth]),
+              basic_constraints: Extension.basic_constraints(false),
+              key_usage: Extension.key_usage([:digitalSignature, :keyEncipherment]),
+              ext_key_usage: Extension.ext_key_usage([:clientAuth]),
               subject_key_identifier: true,
               authority_key_identifier: true
             ]
@@ -398,8 +422,8 @@ defmodule NervesHub.Fixtures do
     defaults = %{
       "device_id" => device.id,
       "deployment_id" => deployment_group.id,
-      "firmware_id" => deployment_group.firmware_id,
-      "firmware_uuid" => deployment_group.firmware.uuid,
+      "firmware_id" => deployment_group.current_release.firmware_id,
+      "firmware_uuid" => deployment_group.current_release.firmware.uuid,
       "expires_at" => expires_at
     }
 
@@ -434,7 +458,7 @@ defmodule NervesHub.Fixtures do
     product = product_fixture(user, org, %{name: "Hop"})
     org_key = org_key_fixture(org, user, dir)
     firmware = firmware_fixture(org_key, product, %{dir: dir})
-    deployment_group = deployment_group_fixture(org, firmware)
+    deployment_group = deployment_group_fixture(firmware, %{user: user})
     device = device_fixture(org, product, firmware)
     %{db_cert: device_certificate} = device_certificate_fixture(device)
 
@@ -468,13 +492,8 @@ defmodule NervesHub.Fixtures do
     |> Repo.insert!()
   end
 
-  def support_script_fixture(
-        %Products.Product{} = product,
-        %Accounts.User{} = user,
-        params \\ %{}
-      ) do
+  def support_script_fixture(%Products.Product{} = product, %Accounts.User{} = user, params \\ %{}) do
     Scripts.Script.create_changeset(
-      %Scripts.Script{},
       product,
       user,
       Map.merge(
@@ -492,8 +511,8 @@ defmodule NervesHub.Fixtures do
     %Ueberauth.Auth{
       uid: "735086597857067149793",
       provider: :google,
-      strategy: Ueberauth.Strategy.Google,
-      info: %Ueberauth.Auth.Info{
+      strategy: Google,
+      info: %Info{
         name: "Jane Person",
         first_name: "Jane",
         last_name: "Person",
@@ -505,7 +524,7 @@ defmodule NervesHub.Fixtures do
         phone: nil,
         birthday: nil
       },
-      credentials: %Ueberauth.Auth.Credentials{
+      credentials: %Credentials{
         token: "dummytoken",
         refresh_token: nil,
         token_type: "Bearer",
@@ -519,7 +538,7 @@ defmodule NervesHub.Fixtures do
         ],
         other: %{}
       },
-      extra: %Ueberauth.Auth.Extra{
+      extra: %Extra{
         raw_info: %{
           user: %{
             "email" => "jane@person.com",
@@ -548,7 +567,7 @@ defmodule NervesHub.Fixtures do
   end
 
   defp counter() do
-    System.unique_integer([:positive])
+    System.unique_integer([:positive, :monotonic])
   end
 
   defp counter_in_alpha() do

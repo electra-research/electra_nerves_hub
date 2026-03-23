@@ -1,8 +1,8 @@
 defmodule NervesHubWeb.API.OpenAPI.DeviceControllerSpecs do
   import OpenApiSpex.Operation, only: [request_body: 4, response: 3]
 
-  alias NervesHubWeb.API.Schemas.DeviceSchemas
   alias NervesHubWeb.API.Schemas.DeviceCertificateSchemas
+  alias NervesHubWeb.API.Schemas.DeviceSchemas
 
   @organization_parameter %OpenApiSpex.Parameter{
     name: :org_name,
@@ -130,15 +130,11 @@ defmodule NervesHubWeb.API.OpenAPI.DeviceControllerSpecs do
   end
 
   def show_device_action(opts) do
-    device_operation("Show a Device", :show, opts.parameters, opts.tags,
-      response: @device_response
-    )
+    device_operation("Show a Device", :show, opts.parameters, opts.tags, response: @device_response)
   end
 
   def delete_device_action(opts) do
-    device_operation("Delete a Device", :delete, opts.parameters, opts.tags,
-      response: @empty_response
-    )
+    device_operation("Delete a Device", :delete, opts.parameters, opts.tags, response: @empty_response)
   end
 
   def create_device_action(opts) do
@@ -297,12 +293,25 @@ defmodule NervesHubWeb.API.OpenAPI.DeviceControllerSpecs do
 
     additional_parameters = [
       %OpenApiSpex.Parameter{
-        name: :script_id,
+        name: :name_or_id,
         in: :path,
-        description: "Support Script ID",
+        description: "Support Script Name or ID. Name takes priority.",
         required: true,
+        schema: %OpenApiSpex.Schema{
+          oneOf: [
+            %OpenApiSpex.Schema{type: :string},
+            %OpenApiSpex.Schema{type: :integer}
+          ]
+        },
+        example: "my-script"
+      },
+      %OpenApiSpex.Parameter{
+        name: :timeout,
+        in: :query,
+        description: "How long to wait for a device response in milliseconds",
+        required: false,
         schema: %OpenApiSpex.Schema{type: :integer},
-        example: "123"
+        example: "10000"
       }
     ]
 
@@ -321,7 +330,7 @@ defmodule NervesHubWeb.API.OpenAPI.DeviceControllerSpecs do
 
     add_to_paths(
       openapi,
-      "#{opts.path_prefix}/scripts/{script_id}",
+      "#{opts.path_prefix}/scripts/{name_or_id}",
       %OpenApiSpex.PathItem{post: send_script_operation}
     )
   end

@@ -2,18 +2,18 @@ defmodule NervesHubWeb.DeviceSocket do
   use Phoenix.Socket
   use OpenTelemetryDecorator
 
-  require Logger
-
   alias NervesHub.Devices
   alias NervesHub.Devices.Connections
   alias NervesHub.Devices.DeviceConnection
+  alias NervesHub.ProductNotifications
   alias NervesHub.Products
-  alias NervesHub.Tracker
-
+  alias Phoenix.Socket.Transport
   alias Plug.Crypto
 
+  require Logger
+
   channel("console", NervesHubWeb.ConsoleChannel)
-  channel("device", NervesHubWeb.DeviceChannel)
+  channel("device:*", NervesHubWeb.DeviceChannel)
   channel("extensions", NervesHubWeb.ExtensionsChannel)
 
   # Default 90 seconds max age for the signature
@@ -21,60 +21,84 @@ defmodule NervesHubWeb.DeviceSocket do
 
   defoverridable init: 1, handle_in: 2, terminate: 2
 
-  @impl Phoenix.Socket.Transport
+  @impl Transport
   def init(state_tuple) do
     {:ok, {state, socket}} = super(state_tuple)
     socket = on_connect(socket)
     {:ok, {state, socket}}
   end
 
-  @impl Phoenix.Socket.Transport
+  @impl Transport
   @decorate with_span("Channels.DeviceSocket.terminate")
   def terminate(reason, {channels_info, socket}) do
     socket = on_disconnect(reason, socket)
     super(reason, {channels_info, socket})
   end
 
-  @impl Phoenix.Socket.Transport
-  def handle_in({payload, opts} = msg, {state, socket}) do
+  @impl Transport
+  def handle_in(msg, {state, socket}) do
+    socket = heartbeat(socket)
+    {msg, state_and_socket} = maybe_fix_join_ref(msg, {state, socket})
+    super(msg, state_and_socket)
+  end
+
+  # Due to Slipstream not sending `join_ref`s with every message (CuatroElixir/slipstream#84),
+  # and Phoenix tightening up their Channel implementation (phoenixframework/phoenix@c73bbfc),
+  # and we aren't able to force devices to upgrade to the most recent Slipstream version,
+  # we need to add the `join_ref` to Channel messages (a bandaid) or be stuck on Phoenix 1.8.2
+  defp maybe_fix_join_ref(msg, {state, socket}) when state.channels == [] do
+    {msg, {state, socket}}
+  end
+
+  defp maybe_fix_join_ref(msg, {state, socket}) do
+    {payload, opts} = msg
     message = socket.serializer.decode!(payload, opts)
 
-    socket = heartbeat(message, socket)
+    channel_info =
+      state.channels_inverse
+      |> Enum.find(fn {_pid, {topic, _join_ref}} -> message.topic == topic end)
 
-    super(msg, {state, socket})
+    with {_pid, {_topic, join_ref}} <- channel_info,
+         true <- is_nil(message.join_ref) do
+      message = put_in(message.join_ref, join_ref)
+      data = [message.join_ref, message.ref, message.topic, message.event, message.payload]
+      encoded = Phoenix.json_library().encode_to_iodata!(data)
+
+      {{encoded, opts}, {state, socket}}
+    else
+      _ ->
+        {msg, {state, socket}}
+    end
   end
 
   @decorate with_span("Channels.DeviceSocket.heartbeat")
-  defp heartbeat(%Phoenix.Socket.Message{topic: "phoenix", event: "heartbeat"}, socket) do
-    if heartbeat?(socket) do
-      %{device: device, reference_id: ref_id} = socket.assigns
+  defp heartbeat(%{assigns: %{device: device, reference_id: ref_id}} = socket) do
+    if update_heartbeat?(socket) do
       Connections.device_heartbeat(device, ref_id)
-
-      last_heartbeat =
-        DateTime.utc_now()
-        |> DateTime.truncate(:second)
-
-      assign(socket, :last_heartbeat_at, last_heartbeat)
+      update_last_heartbeat(socket)
     else
       socket
     end
   end
 
-  defp heartbeat(_message, socket), do: socket
+  defp heartbeat(socket), do: socket
 
-  defp heartbeat?(%{assigns: %{last_heartbeat_at: last_heartbeat_at}}) do
-    seconds_ago = DateTime.diff(DateTime.utc_now(), last_heartbeat_at, :second)
+  defp update_heartbeat?(%{assigns: %{last_heartbeat: last_heartbeat}}) do
+    seconds_ago = System.monotonic_time(:second) - last_heartbeat
 
     seconds_ago >= last_seen_update_interval()
   end
 
-  defp heartbeat?(_), do: true
+  defp update_heartbeat?(_), do: false
+
+  defp update_last_heartbeat(socket) do
+    assign(socket, :last_heartbeat, System.monotonic_time(:second))
+  end
 
   # Used by Devices connecting with SSL certificates
   @impl Phoenix.Socket
-  @decorate with_span("Channels.DeviceSocket.connect")
-  def connect(_params, socket, %{peer_data: %{ssl_cert: ssl_cert}})
-      when not is_nil(ssl_cert) do
+  @decorate with_span("Channels.DeviceSocket.connect:cert_auth")
+  def connect(_params, socket, %{peer_data: %{ssl_cert: ssl_cert}}) when not is_nil(ssl_cert) do
     X509.Certificate.from_der!(ssl_cert)
     |> Devices.get_device_by_x509()
     |> case do
@@ -92,9 +116,9 @@ defmodule NervesHubWeb.DeviceSocket do
   end
 
   # Used by Devices connecting with HMAC Shared Secrets
-  @decorate with_span("Channels.DeviceSocket.connect")
+  @decorate with_span("Channels.DeviceSocket.connect:shared_secrets")
   def connect(_params, socket, %{x_headers: x_headers})
-      when is_list(x_headers) and length(x_headers) > 0 do
+      when is_list(x_headers) and (is_list(x_headers) and x_headers != []) do
     headers = Map.new(x_headers)
 
     with :ok <- check_shared_secret_enabled(),
@@ -105,15 +129,59 @@ defmodule NervesHubWeb.DeviceSocket do
          {:ok, device} <- get_or_maybe_create_device(auth, identifier) do
       socket_and_assigns(socket, device)
     else
+      {:error,
+       %Ecto.Changeset{
+         changes: %{identifier: identifier, org_id: org_id, product_id: product_id},
+         errors: [
+           identifier: {_msg, [constraint: :unique, constraint_name: "devices_identifier_index"]}
+         ]
+       }} ->
+        _ =
+          ProductNotifications.create_duplicate_device_identifier_notification!(
+            product_id,
+            identifier,
+            :shared_secret
+          )
+
+        :telemetry.execute([:nerves_hub, :devices, :invalid_auth], %{count: 1}, %{
+          auth: :shared_secrets,
+          reason: :duplicate_device_identifier,
+          org_id: org_id,
+          product_id: product_id,
+          identifier: identifier
+        })
+
+        {:error, :invalid_auth}
+
+      {:error, :expired} ->
+        :telemetry.execute([:nerves_hub, :devices, :invalid_auth], %{count: 1}, %{
+          auth: :shared_secrets,
+          reason: :signature_expired,
+          shared_key: Map.get(headers, "x-nh-key", "*empty*")
+        })
+
+        {:error, :invalid_auth}
+
       error ->
         :telemetry.execute([:nerves_hub, :devices, :invalid_auth], %{count: 1}, %{
           auth: :shared_secrets,
           reason: error,
-          product_key: Map.get(headers, "x-nh-key", "*empty*")
+          shared_key: Map.get(headers, "x-nh-key", "*empty*")
         })
 
         {:error, :invalid_auth}
     end
+  rescue
+    e in ArgumentError ->
+      headers = Map.new(x_headers)
+
+      :telemetry.execute([:nerves_hub, :devices, :invalid_auth], %{count: 1}, %{
+        auth: :shared_secrets,
+        reason: e,
+        shared_key: Map.get(headers, "x-nh-key", "*empty*")
+      })
+
+      {:error, :invalid_auth}
   end
 
   def connect(_params, _socket, _connect_info) do
@@ -136,7 +204,7 @@ defmodule NervesHubWeb.DeviceSocket do
 
   defp decode_from_headers(%{"x-nh-alg" => "NH1-HMAC-" <> alg} = headers) do
     with [digest_str, iter_str, key_len_str] <- String.split(alg, "-"),
-         digest <- String.to_existing_atom(String.downcase(digest_str)),
+         digest = String.to_existing_atom(String.downcase(digest_str)),
          {iterations, ""} <- Integer.parse(iter_str),
          {key_length, ""} <- Integer.parse(key_len_str),
          {signed_at, ""} <- Integer.parse(headers["x-nh-time"]),
@@ -171,8 +239,7 @@ defmodule NervesHubWeb.DeviceSocket do
     Devices.get_or_create_device(auth, identifier)
   end
 
-  defp get_or_maybe_create_device(%{device: %{identifier: identifier} = device}, identifier),
-    do: {:ok, device}
+  defp get_or_maybe_create_device(%{device: %{identifier: identifier} = device}, identifier), do: {:ok, device}
 
   defp get_or_maybe_create_device(_auth, _identifier), do: {:error, :bad_identifier}
 
@@ -211,20 +278,26 @@ defmodule NervesHubWeb.DeviceSocket do
   defp on_connect(%{assigns: %{device: device}} = socket) do
     # Report connection and use connection id as reference
     {:ok, %DeviceConnection{id: connection_id}} =
-      Connections.device_connecting(device.id, device.product_id)
+      Connections.device_connecting(device, device.product_id)
 
     :telemetry.execute([:nerves_hub, :devices, :connect], %{count: 1}, %{
       ref_id: connection_id,
       identifier: socket.assigns.device.identifier,
-      firmware_uuid:
-        get_in(socket.assigns.device, [Access.key(:firmware_metadata), Access.key(:uuid)])
+      firmware_uuid: get_in(socket.assigns.device, [Access.key(:firmware_metadata), Access.key(:uuid)])
     })
 
-    Tracker.online(device)
+    # this is required by `DeviceJSONSerializer` which needs to update the message topic,
+    # allowing for the socket to map messages correctly
+    #
+    # we could remove this and instead modify the payload in `handle_in`, but I favoured
+    # this approach as it simplifies the logic in `handle_in` and keeps the topic remapping
+    # logic in one place, the serializer
+    Process.put(:device_id, device.id)
 
     socket
     |> assign(:device, device)
     |> assign(:reference_id, connection_id)
+    |> update_last_heartbeat()
   end
 
   defp on_disconnect(_reason, %{assigns: %{disconnection_handled?: true} = socket}) do
@@ -247,9 +320,18 @@ defmodule NervesHubWeb.DeviceSocket do
       identifier: device.identifier
     })
 
-    :ok = Connections.device_disconnected(reference_id)
+    case Connections.device_disconnected(device, reference_id) do
+      :ok ->
+        :ok
 
-    Tracker.offline(device)
+      {:error, reason} ->
+        Logger.error(
+          "An error occurred while disconnecting device (#{device.id}), ecto update result: #{inspect(reason)}",
+          identifier: device.identifier,
+          device_id: device.id,
+          ref_id: reference_id
+        )
+    end
 
     assign(socket, :disconnection_handled?, true)
   end

@@ -5,14 +5,25 @@ defmodule NervesHub.Archives do
 
   import Ecto.Query
 
-  require Logger
-
   alias NervesHub.Archives.Archive
   alias NervesHub.Fwup
   alias NervesHub.ManagedDeployments.DeploymentGroup
+  alias NervesHub.ManagedDeployments.DeploymentRelease
   alias NervesHub.Products.Product
   alias NervesHub.Repo
   alias NervesHub.Workers.DeleteArchive
+
+  require Logger
+
+  @spec get_by_id(Product.t(), pos_integer()) :: Archive.t() | nil
+  def get_by_id(_product, archive_id) when archive_id in [nil, ""], do: nil
+
+  def get_by_id(%Product{} = product, archive_id) do
+    Archive
+    |> where([f], f.product_id == ^product.id)
+    |> where([f], f.id == ^archive_id)
+    |> Repo.one()
+  end
 
   @spec filter(Product.t(), map()) :: {[Product.t()], Flop.Meta.t()}
   def filter(product, opts \\ %{}) do
@@ -72,8 +83,9 @@ defmodule NervesHub.Archives do
 
   def archive_for_deployment_group(deployment_id) do
     Archive
-    |> join(:inner, [a], d in DeploymentGroup, on: d.archive_id == a.id)
-    |> where([a, d], d.id == ^deployment_id)
+    |> join(:inner, [a], dr in DeploymentRelease, on: dr.archive_id == a.id)
+    |> join(:inner, [a, dr], dg in DeploymentGroup, on: dr.id == dg.current_deployment_release_id)
+    |> where([a, d, dg], dg.id == ^deployment_id)
     |> Repo.one()
   end
 
@@ -103,12 +115,10 @@ defmodule NervesHub.Archives do
 
   @spec delete_archive(Archive.t()) :: {:ok, Archive.t()} | {:error, any()}
   def delete_archive(%Archive{} = archive) do
-    Repo.transaction(fn ->
+    Repo.transact(fn ->
       with {:ok, archive} <- Repo.delete(archive),
            {:ok, _} <- delete_artifacts(archive) do
         {:ok, archive}
-      else
-        {:error, error} -> Repo.rollback(error)
       end
     end)
   end

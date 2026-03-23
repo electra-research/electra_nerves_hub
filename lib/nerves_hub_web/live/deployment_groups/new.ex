@@ -1,97 +1,155 @@
 defmodule NervesHubWeb.Live.DeploymentGroups.New do
-  use NervesHubWeb, :updated_live_view
+  use NervesHubWeb, :live_view
 
-  alias NervesHub.AuditLogs.DeploymentGroupTemplates
   alias NervesHub.Firmwares
   alias NervesHub.Firmwares.Firmware
   alias NervesHub.ManagedDeployments
-  alias NervesHub.ManagedDeployments.DeploymentGroup
 
   @impl Phoenix.LiveView
-  def mount(_params, _session, %{assigns: %{org: org, product: product}} = socket) do
-    firmware = Firmwares.get_firmwares_by_product(socket.assigns.product.id)
-
-    if Enum.empty?(firmware) do
+  def mount(_params, _session, %{assigns: %{current_scope: scope}} = socket) do
+    if Firmwares.count(scope.product) == 0 do
       socket
-      |> put_flash(
-        :error,
-        "You must upload a firmware version before creating a Deployment Group"
-      )
-      |> push_navigate(to: ~p"/org/#{org}/#{product}/firmware/upload")
+      |> assign(:firmware_required, true)
+      |> sidebar_tab(:deployments)
       |> ok()
     else
-      platforms =
-        firmware
-        |> Enum.map(& &1.platform)
-        |> Enum.uniq()
+      platforms = Firmwares.get_unique_platforms(scope.product)
 
       socket
-      |> page_title("New Deployment - #{socket.assigns.product.name}")
+      |> page_title("New Deployment - #{scope.product.name}")
       |> sidebar_tab(:deployments)
+      |> assign(:firmware_required, false)
       |> assign(:platforms, platforms)
+      |> assign(:architectures, [])
       |> assign(:platform, nil)
-      |> assign(:form, to_form(Ecto.Changeset.change(%DeploymentGroup{})))
+      |> assign(:architecture, nil)
+      |> assign(:firmwares, [])
+      |> assign(:form, to_form(ManagedDeployments.new_deployment_group()))
       |> ok()
     end
   end
 
   @impl Phoenix.LiveView
-  def handle_event("select-platform", %{"platform" => platform}, socket) do
-    authorized!(:"deployment_group:create", socket.assigns.org_user)
+  def handle_event(
+        "update-form",
+        %{"_target" => ["deployment_group", "platform"], "deployment_group" => %{"platform" => platform}},
+        socket
+      ) do
+    authorized!(:"deployment_group:create", socket.assigns.current_scope)
 
-    %{product: product} = socket.assigns
-
-    firmwares = Firmwares.get_firmwares_by_product(product.id)
-
-    firmwares =
-      Enum.filter(firmwares, fn firmware ->
-        firmware.platform == platform
-      end)
+    architectures = Firmwares.get_unique_architectures(socket.assigns.current_scope.product)
 
     socket
-    |> assign(:firmwares, firmwares)
-    |> assign(:form, to_form(Ecto.Changeset.change(%DeploymentGroup{})))
     |> assign(:platform, platform)
+    |> assign(:architectures, architectures)
+    |> assign(:architecture, nil)
+    |> assign(:firmwares, [])
     |> noreply()
   end
 
-  # @impl Phoenix.LiveView
-  def handle_event("create-deployment-group", %{"deployment_group" => params}, socket) do
-    authorized!(:"deployment_group:create", socket.assigns.org_user)
-
-    %{user: user, org: org, product: product} = socket.assigns
-
-    params =
-      params
-      |> inject_conditions_map()
-      |> whitelist([:name, :conditions, :firmware_id])
-      |> Map.put(:org_id, org.id)
-      |> Map.put(:is_active, false)
-
-    org
-    |> Firmwares.get_firmware(params[:firmware_id])
-    |> case do
-      {:ok, firmware} ->
-        {firmware, ManagedDeployments.create_deployment_group(params)}
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-    end
-    |> case do
-      {:error, :not_found} ->
+  def handle_event(
+        "update-form",
+        %{"_target" => ["deployment_group", "architecture"], "deployment_group" => %{"architecture" => architecture}},
         socket
-        |> put_flash(:error, "Invalid firmware selected")
-        |> noreply()
+      ) do
+    authorized!(:"deployment_group:create", socket.assigns.current_scope)
 
-      {_, {:ok, deployment_group}} ->
-        DeploymentGroupTemplates.audit_deployment_created(user, deployment_group)
+    firmwares =
+      Firmwares.get_firmwares(socket.assigns.current_scope.product, socket.assigns.platform, architecture)
 
+    socket
+    |> assign(:firmwares, firmwares)
+    |> assign(:architecture, architecture)
+    |> noreply()
+  end
+
+  def handle_event("update-form", _data, socket) do
+    # noop all other changed fields
+    {:noreply, socket}
+  end
+
+  def handle_event("recover-form", %{"deployment_group" => params}, socket) do
+    socket
+    |> assign(:form, to_form(params, as: :deployment_group))
+    |> then(fn socket ->
+      if platform = socket.assigns.form["platform"].value do
+        architectures = Firmwares.get_unique_architectures(socket.assigns.current_scope.product)
+
+        socket
+        |> assign(:platform, platform)
+        |> assign(:architectures, architectures)
+      else
+        socket
+      end
+    end)
+    |> then(fn socket ->
+      if architecture = socket.assigns.form["architecture"].value do
+        %{current_scope: scope} = socket.assigns
+
+        firmwares =
+          Firmwares.get_firmwares(scope.product, socket.assigns.platform, architecture)
+
+        socket
+        |> assign(:firmwares, firmwares)
+        |> assign(:architecture, architecture)
+      else
+        socket
+      end
+    end)
+    |> noreply()
+  end
+
+  # def handle_event("platform-selected", %{"deployment_group" => %{"platform" => platform}}, socket) do
+  #   authorized!(:"deployment_group:create", socket.assigns.current_scope)
+
+  #   %{product: product} = socket.assigns
+
+  #   raise("here: #{platform}")
+
+  #   architectures = Firmwares.get_unique_architectures(product)
+
+  #   dbg(architectures)
+
+  #   socket
+  #   |> assign(:platform, platform)
+  #   |> assign(:architectures, architectures)
+  #   |> assign(:architecture, nil)
+  #   |> assign(:firmwares, [])
+  #   |> noreply()
+  # end
+
+  # def handle_event("architecture-selected", %{"deployment_group" => %{"architecture" => architecture}}, socket) do
+  #   authorized!(:"deployment_group:create", socket.assigns.current_scope)
+
+  #   dbg("here: #{architecture}")
+
+  #   %{product: product} = socket.assigns
+
+  #   firmwares =
+  #     Firmwares.get_firmwares(product, socket.assigns.platform, architecture)
+
+  #   socket
+  #   |> assign(:firmwares, firmwares)
+  #   |> assign(:architecture, architecture)
+  #   |> noreply()
+  # end
+
+  def handle_event("create-deployment-group", %{"deployment_group" => params}, socket) do
+    authorized!(:"deployment_group:create", socket.assigns.current_scope)
+
+    %{user: user, org: org, product: product} = socket.assigns.current_scope
+
+    firmware = Firmwares.get_by_id(product, params["firmware"])
+
+    ManagedDeployments.create_deployment_group(params, product, firmware, user)
+    |> case do
+      {:ok, deployment_group} ->
         socket
         |> put_flash(:info, "Deployment Group created")
         |> push_navigate(to: ~p"/org/#{org}/#{product}/deployment_groups/#{deployment_group}")
         |> noreply()
 
-      {_firmware, {:error, changeset}} ->
+      {:error, changeset} ->
         socket
         |> put_flash(:error, "There was an error creating the deployment")
         |> assign(:form, to_form(changeset))
@@ -117,44 +175,6 @@ defmodule NervesHubWeb.Live.DeploymentGroups.New do
   end
 
   defp firmware_display_name(%Firmware{} = f) do
-    "#{f.version} #{f.platform} #{f.architecture} #{f.uuid}"
-  end
-
-  defp inject_conditions_map(%{"version" => version, "tags" => tags} = params) do
-    params
-    |> Map.put("conditions", %{
-      "version" => version,
-      "tags" =>
-        tags
-        |> tags_as_list()
-        |> MapSet.new()
-        |> MapSet.to_list()
-    })
-  end
-
-  defp inject_conditions_map(params), do: params
-
-  def tags_to_string(%Ecto.Changeset{} = changeset) do
-    conditions =
-      changeset
-      |> Ecto.Changeset.get_field(:conditions)
-
-    tags =
-      conditions
-      |> Map.get("tags", [])
-      |> Enum.join(",")
-
-    conditions = Map.put(conditions, "tags", tags)
-
-    changeset
-    |> Ecto.Changeset.put_change(:conditions, conditions)
-  end
-
-  defp tags_as_list(""), do: []
-
-  defp tags_as_list(tags) do
-    tags
-    |> String.split(",")
-    |> Enum.map(&String.trim/1)
+    "#{f.version} - #{f.uuid}"
   end
 end

@@ -5,20 +5,22 @@ defmodule NervesHub.Firmwares.Upload.File do
 
   @behaviour NervesHub.Firmwares.Upload
 
+  alias NervesHub.Firmwares.Upload
+
   @type upload_metadata :: %{local_path: String.t(), public_path: String.t()}
 
-  @impl NervesHub.Firmwares.Upload
+  @impl Upload
   def upload_file(source, %{local_path: local_path}) do
     :ok = local_path |> Path.dirname() |> File.mkdir_p()
     :ok = File.cp(source, local_path)
   end
 
-  @impl NervesHub.Firmwares.Upload
+  @impl Upload
   def download_file(%{upload_metadata: metadata}), do: do_download_file(metadata)
   defp do_download_file(%{public_path: path}), do: {:ok, path}
   defp do_download_file(%{"public_path" => path}), do: {:ok, path}
 
-  @impl NervesHub.Firmwares.Upload
+  @impl Upload
   def delete_file(%{local_path: path}), do: delete_file(path)
   def delete_file(%{"local_path" => path}), do: delete_file(path)
 
@@ -29,7 +31,7 @@ defmodule NervesHub.Firmwares.Upload.File do
     if File.exists?(path), do: File.rm!(path), else: :ok
   end
 
-  @impl NervesHub.Firmwares.Upload
+  @impl Upload
   def metadata(org_id, filename) do
     web_config = Application.get_env(:nerves_hub, NervesHubWeb.Endpoint)
 
@@ -47,6 +49,39 @@ defmodule NervesHub.Firmwares.Upload.File do
       "#{web_config[:url][:scheme]}://#{web_config[:url][:host]}#{port}/" <>
         (Path.join([config[:public_path], common_path, filename])
          |> String.trim("/"))
+
+    %{
+      public_path: public_path,
+      local_path: local_path
+    }
+  end
+
+  @impl Upload
+  def delta_metadata(org_id, source_firmware_uuid, target_firmware_uuid) do
+    web_config = Application.get_env(:nerves_hub, NervesHubWeb.Endpoint)
+
+    config = Application.get_env(:nerves_hub, __MODULE__)
+
+    common_path =
+      Path.join([
+        Integer.to_string(org_id),
+        source_firmware_uuid,
+        "#{target_firmware_uuid}.delta.fw"
+      ])
+
+    local_path = Path.join([config[:local_path], common_path])
+
+    port =
+      if Enum.member?([443, 80], web_config[:url][:port]),
+        do: "",
+        else: ":#{web_config[:url][:port]}"
+
+    public_path =
+      Path.join([
+        "#{web_config[:url][:scheme]}://#{web_config[:url][:host]}#{port}/",
+        config[:public_path],
+        common_path
+      ])
 
     %{
       public_path: public_path,

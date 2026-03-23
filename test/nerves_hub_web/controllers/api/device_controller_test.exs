@@ -1,5 +1,5 @@
 defmodule NervesHubWeb.API.DeviceControllerTest do
-  use NervesHubWeb.APIConnCase, async: false
+  use NervesHubWeb.APIConnCase, async: true
   use Mimic
 
   import Phoenix.ChannelTest
@@ -7,6 +7,7 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   alias NervesHub.Devices
   alias NervesHub.Fixtures
   alias NervesHub.Repo
+  alias NervesHub.Scripts.Runner
 
   describe "create devices" do
     test "renders device when data is valid", %{conn: conn, org: org, product: product} do
@@ -36,20 +37,91 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "index" do
-    test "lists all devices for an org", %{conn: conn, user: user, org: org} do
-      product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+    test "lists all devices for an org", %{conn: conn, user: user, tmp_dir: tmp_dir} do
+      org = Fixtures.org_fixture(user, %{name: "AllTheBoops"})
+      product = Fixtures.product_fixture(user, org, %{name: "auto_boops"})
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn = get(conn, Routes.api_device_path(conn, :index, org.name, product.name))
 
-      assert json_response(conn, 200)["data"]
+      assert json_response(conn, 200) == %{
+               "data" => [
+                 %{
+                   "connection_status" => "not_seen",
+                   "deleted" => false,
+                   "deployment_group" => nil,
+                   "description" => nil,
+                   "firmware_metadata" => %{
+                     "architecture" => "x86_64",
+                     "author" => "me",
+                     "description" => "D ",
+                     "fwup_version" => "1.0.0",
+                     "id" => device.firmware_metadata.id,
+                     "misc" => nil,
+                     "platform" => "platform",
+                     "product" => "auto_boops",
+                     "uuid" => firmware.uuid,
+                     "vcs_identifier" => nil,
+                     "version" => "1.0.0"
+                   },
+                   "identifier" => device.identifier,
+                   "last_communication" => "never",
+                   "online" => "not_seen",
+                   "org_name" => "AllTheBoops",
+                   "product_name" => "auto_boops",
+                   "tags" => ["beta", "beta-edge"],
+                   "updates_blocked_until" => nil,
+                   "updates_enabled" => true,
+                   "version" => "1.0.0"
+                 }
+               ],
+               "pagination" => %{
+                 "page_number" => 1,
+                 "page_size" => nil,
+                 "total_entries" => 1,
+                 "total_pages" => 1
+               }
+             }
 
       assert Enum.find(conn.assigns.devices, fn %{identifier: identifier} ->
                device.identifier == identifier
              end)
+    end
+
+    test "lists devices with a deployment group", %{conn: conn, user: user, tmp_dir: tmp_dir} do
+      org = Fixtures.org_fixture(user, %{name: "DeployedOrg"})
+      product = Fixtures.product_fixture(user, org, %{name: "deployed_product"})
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      device = Fixtures.device_fixture(org, product, firmware)
+      deployment_group = Fixtures.deployment_group_fixture(firmware, %{user: user})
+
+      {:ok, _device} =
+        Devices.update_device(device, %{deployment_id: deployment_group.id})
+
+      conn = get(conn, Routes.api_device_path(conn, :index, org.name, product.name))
+
+      assert %{"data" => [device_data]} = json_response(conn, 200)
+      assert device_data["identifier"] == device.identifier
+      assert device_data["deployment_group"]["name"] == deployment_group.name
+    end
+
+    test "does not return soft-deleted devices", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      {:ok, _device} =
+        Fixtures.device_fixture(org, product, firmware)
+        |> Devices.update_device(%{deleted_at: DateTime.utc_now()})
+
+      conn = get(conn, Routes.api_device_path(conn, :index, org.name, product.name))
+
+      assert json_response(conn, 200)["data"] == []
     end
   end
 
@@ -57,11 +129,12 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
     test "device that the user has access to, using nested url", %{
       conn: conn,
       user: user,
-      org: org
+      org: org,
+      tmp_dir: tmp_dir
     } do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       device = Fixtures.device_fixture(org, product, firmware)
 
@@ -89,11 +162,12 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
     test "device that the user has access to, using short url", %{
       conn: conn,
       user: user,
-      org: org
+      org: org,
+      tmp_dir: tmp_dir
     } do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       device = Fixtures.device_fixture(org, product, firmware)
 
@@ -111,13 +185,64 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       end)
       |> assert_authorization_error(404)
     end
+
+    test "deleted device can be queried", %{
+      conn: conn,
+      user: user,
+      org: org,
+      tmp_dir: tmp_dir
+    } do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      {:ok, device} =
+        Fixtures.device_fixture(org, product, firmware)
+        |> Devices.update_device(%{deleted_at: DateTime.utc_now()})
+
+      conn =
+        get(conn, Routes.api_device_path(conn, :show, device.identifier))
+
+      assert json_response(conn, 200)["data"]
+
+      assert json_response(conn, 200)["data"]["identifier"] == device.identifier
+    end
+
+    test "device indicates if it has been deleted", %{
+      conn: conn,
+      user: user,
+      org: org,
+      tmp_dir: tmp_dir
+    } do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      {:ok, device} =
+        Fixtures.device_fixture(org, product, firmware)
+        |> Devices.update_device(%{deleted_at: DateTime.utc_now()})
+
+      conn =
+        get(conn, Routes.api_device_path(conn, :show, device.identifier))
+
+      assert json_response(conn, 200)["data"]
+
+      assert json_response(conn, 200)["data"]["deleted"] == true
+
+      {:ok, device} = Devices.update_device(device, %{deleted_at: nil})
+
+      conn =
+        get(conn, Routes.api_device_path(conn, :show, device.identifier))
+
+      assert json_response(conn, 200)["data"]["deleted"] == false
+    end
   end
 
   describe "delete devices" do
-    test "deletes chosen device", %{conn: conn, user: user, org: org} do
+    test "deletes chosen device", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       to_delete = Fixtures.device_fixture(org, product, firmware)
 
@@ -131,25 +256,18 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
         )
 
       assert response(conn, 204)
-
-      assert_error_sent(404, fn ->
-        get(
-          conn,
-          Routes.api_device_path(conn, :show, org.name, product.name, to_delete.identifier)
-        )
-      end)
-      |> assert_authorization_error(404)
     end
 
     test "does not have required role to delete chosen device", %{
       conn: conn,
       user: user,
       conn2: other_user_conn,
-      org: org
+      org: org,
+      tmp_dir: tmp_dir
     } do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       to_delete = Fixtures.device_fixture(org, product, firmware)
 
@@ -167,19 +285,20 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "update devices" do
-    test "updates chosen device", %{conn: conn, user: user, org: org} do
+    test "updates chosen device", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      deployment_group = Fixtures.deployment_group_fixture(firmware, %{user: user})
+      device = Fixtures.device_fixture(org, product, firmware)
 
-      Fixtures.device_fixture(org, product, firmware)
-
-      [to_update | _] = Devices.get_devices_by_org_id_and_product_id(org.id, product.id)
+      {:ok, device} =
+        Devices.update_device(device, %{deployment_id: deployment_group.id})
 
       conn =
         put(
           conn,
-          Routes.api_device_path(conn, :update, org.name, product.name, to_update.identifier),
+          Routes.api_device_path(conn, :update, org.name, product.name, device.identifier),
           %{
             tags: ["a", "b", "c", "d"]
           }
@@ -190,7 +309,7 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       conn =
         get(
           conn,
-          Routes.api_device_path(conn, :show, org.name, product.name, to_update.identifier)
+          Routes.api_device_path(conn, :show, org.name, product.name, device.identifier)
         )
 
       assert json_response(conn, 200)
@@ -199,10 +318,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "authenticate devices" do
-    test "valid certificate", %{conn: conn, user: user, org: org} do
+    test "valid certificate", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       device = Fixtures.device_fixture(org, product, firmware)
       %{cert: ca, key: ca_key} = Fixtures.ca_certificate_fixture(org)
@@ -229,11 +348,11 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "upgrade firmware" do
-    test "pushing new firmware to a device", %{conn: conn, user: user, org: org} do
+    test "pushing new firmware to a device", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware_one = Fixtures.firmware_fixture(org_key, product)
-      firmware_two = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware_one = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      firmware_two = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       device = Fixtures.device_fixture(org, product, firmware_one)
 
@@ -248,10 +367,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "clear penalty box" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       {:ok, device} = Devices.update_device(device, %{updates_blocked_until: DateTime.utc_now()})
@@ -269,10 +388,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       refute device.updates_blocked_until
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       {:ok, device} = Devices.update_device(device, %{updates_blocked_until: DateTime.utc_now()})
@@ -286,10 +405,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       {:ok, device} = Devices.update_device(device, %{updates_blocked_until: DateTime.utc_now()})
@@ -307,29 +426,29 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       refute device.updates_blocked_until
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       {:ok, device} = Devices.update_device(device, %{updates_blocked_until: DateTime.utc_now()})
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         delete(
           conn,
           Routes.api_device_path(conn, :penalty, device.identifier)
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 
   describe "reboot" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn =
@@ -341,10 +460,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       assert_error_sent(404, fn ->
@@ -356,10 +475,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn = post(conn, Routes.api_device_path(conn, :reboot, device.identifier))
@@ -367,27 +486,27 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_device_path(conn, :reconnect, device.identifier)
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 
   describe "reconnect" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn =
@@ -399,10 +518,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       assert_error_sent(404, fn ->
@@ -414,10 +533,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn = post(conn, Routes.api_device_path(conn, :reconnect, device.identifier))
@@ -425,27 +544,27 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_device_path(conn, :reconnect, device.identifier)
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 
   describe "code" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn =
@@ -458,10 +577,50 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "support `code` being used instead of `body`", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      device = Fixtures.device_fixture(org, product, firmware)
+
+      conn =
+        post(
+          conn,
+          Routes.api_device_path(conn, :code, org.name, product.name, device.identifier),
+          %{code: "boop"}
+        )
+
+      assert response(conn, 204)
+    end
+
+    test "400 error returned when `code` or `body` are not present", %{
+      conn: conn,
+      user: user,
+      org: org,
+      tmp_dir: tmp_dir
+    } do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      device = Fixtures.device_fixture(org, product, firmware)
+
+      response =
+        assert_error_sent(400, fn ->
+          post(
+            conn,
+            Routes.api_device_path(conn, :code, org.name, product.name, device.identifier),
+            %{snoot: "boop"}
+          )
+        end)
+
+      assert {400, [_h | _t], message} = response
+      assert message =~ "code or body parameter required"
+    end
+
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       assert_error_sent(404, fn ->
@@ -474,10 +633,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn = post(conn, Routes.api_device_path(conn, :code, device.identifier), %{body: "boop"})
@@ -485,28 +644,28 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_device_path(conn, :code, device.identifier),
           %{body: "boop"}
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 
   describe "upgrade" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn =
@@ -519,10 +678,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       assert_error_sent(404, fn ->
@@ -535,10 +694,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       conn =
@@ -549,28 +708,28 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert response(conn, 204)
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_device_path(conn, :upgrade, device.identifier),
           %{uuid: firmware.uuid}
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 
   describe "move device to a new product" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       org2 = Fixtures.org_fixture(user, %{name: "org2"})
@@ -595,10 +754,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert device.product_id == product2.id
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       org2 = Fixtures.org_fixture(user, %{name: "org2"})
@@ -623,12 +782,11 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert device.product_id == product.id
     end
 
-    test "failure: missing permissions in new product, with nested url
-      ",
-         %{conn: conn, user: user, org: org} do
+    test "failure: missing permissions in new product, with nested url",
+         %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       user2 = Fixtures.user_fixture()
@@ -650,10 +808,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error()
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       org2 = Fixtures.org_fixture(user, %{name: "org2"})
@@ -678,10 +836,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       assert device.product_id == product2.id
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       org2 = Fixtures.org_fixture(user, %{name: "org2"})
@@ -689,7 +847,7 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
 
       {:ok, device} = Devices.update_device(device, %{updates_blocked_until: DateTime.utc_now()})
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_device_path(conn, :move, device.identifier),
@@ -699,19 +857,18 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
           }
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
 
       device = Repo.reload(device)
       assert device.org_id == org.id
       assert device.product_id == product.id
     end
 
-    test "failure: missing permissions in new product, with short url
-      ",
-         %{conn: conn, user: user, org: org} do
+    test "failure: missing permissions in new product, with short url",
+         %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
 
       user2 = Fixtures.user_fixture()
@@ -735,10 +892,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
   end
 
   describe "scripts: send" do
-    test "success, with nested url", %{conn: conn, user: user, org: org} do
+    test "success, with nested url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
       script = Fixtures.support_script_fixture(product, user)
 
@@ -752,19 +909,95 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
           script.id
         )
 
-      NervesHub.Scripts.Runner
-      |> expect(:send, fn _, _ -> {:ok, "hello"} end)
+      Runner
+      |> expect(:send, fn _, _, _ -> {:ok, "hello"} end)
 
       conn
       |> post(path)
       |> response(200)
-      |> assert
+      |> assert()
     end
 
-    test "auth failure, with nested url", %{conn2: conn, user: user, org: org} do
+    test "handles timeout param as a string or integer", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      device = Fixtures.device_fixture(org, product, firmware)
+      script = Fixtures.support_script_fixture(product, user)
+
+      path =
+        Routes.api_device_script_path(
+          conn,
+          :send,
+          org.name,
+          product.name,
+          device.identifier,
+          script.id,
+          %{"timeout" => "1000"}
+        )
+
+      Runner
+      |> expect(:send, fn _, _, 1000 -> {:ok, "hello"} end)
+
+      conn
+      |> post(path)
+      |> response(200)
+      |> assert()
+
+      path =
+        Routes.api_device_script_path(
+          conn,
+          :send,
+          org.name,
+          product.name,
+          device.identifier,
+          script.id,
+          %{"timeout" => 1000}
+        )
+
+      Runner
+      |> expect(:send, fn _, _, 1000 -> {:ok, "hello"} end)
+
+      conn
+      |> post(path)
+      |> response(200)
+      |> assert()
+    end
+
+    test "returns 403 for timeouts", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      device = Fixtures.device_fixture(org, product, firmware)
+      script = Fixtures.support_script_fixture(product, user)
+
+      path =
+        Routes.api_device_script_path(
+          conn,
+          :send,
+          org.name,
+          product.name,
+          device.identifier,
+          script.id
+        )
+
+      message = "device not available or responding"
+
+      Runner
+      |> expect(:send, fn _, _, _ -> {:error, message} end)
+
+      resp =
+        conn
+        |> post(path)
+        |> json_response(403)
+
+      assert resp == %{"errors" => %{"detail" => message}}
+    end
+
+    test "auth failure, with nested url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
+      product = Fixtures.product_fixture(user, org)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
       script = Fixtures.support_script_fixture(product, user)
 
@@ -784,10 +1017,10 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
       |> assert_authorization_error(404)
     end
 
-    test "success, with short url", %{conn: conn, user: user, org: org} do
+    test "success, with short url", %{conn: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
       script = Fixtures.support_script_fixture(product, user)
 
@@ -799,23 +1032,23 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
           script.id
         )
 
-      NervesHub.Scripts.Runner
-      |> expect(:send, fn _, _ -> {:ok, "hello"} end)
+      Runner
+      |> expect(:send, fn _, _, _ -> {:ok, "hello"} end)
 
       conn
       |> post(path)
       |> response(200)
-      |> assert
+      |> assert()
     end
 
-    test "auth failure, with short url", %{conn2: conn, user: user, org: org} do
+    test "auth failure, with short url", %{conn2: conn, user: user, org: org, tmp_dir: tmp_dir} do
       product = Fixtures.product_fixture(user, org)
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
+      org_key = Fixtures.org_key_fixture(org, user, tmp_dir)
+      firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
       device = Fixtures.device_fixture(org, product, firmware)
       script = Fixtures.support_script_fixture(product, user)
 
-      assert_error_sent(401, fn ->
+      assert_error_sent(404, fn ->
         post(
           conn,
           Routes.api_script_path(
@@ -826,7 +1059,7 @@ defmodule NervesHubWeb.API.DeviceControllerTest do
           )
         )
       end)
-      |> assert_authorization_error(401)
+      |> assert_authorization_error(404)
     end
   end
 end

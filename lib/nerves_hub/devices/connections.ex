@@ -7,6 +7,7 @@ defmodule NervesHub.Devices.Connections do
   alias NervesHub.Devices.Device
   alias NervesHub.Devices.DeviceConnection
   alias NervesHub.Repo
+  alias NervesHub.Tracker
 
   @doc """
   Get all connections for a device.
@@ -17,6 +18,69 @@ defmodule NervesHub.Devices.Connections do
     |> where(device_id: ^device_id)
     |> order_by(asc: :last_seen_at)
     |> Repo.all()
+  end
+
+  @doc """
+  Get device connection information for Orgs.
+  """
+  @spec get_connection_status_by_orgs(org_ids :: [non_neg_integer()]) :: %{
+          non_neg_integer() => %{online: non_neg_integer(), offline: non_neg_integer()}
+        }
+  def get_connection_status_by_orgs(org_ids) when is_list(org_ids) do
+    %{online: online, offline: offline} =
+      connection_status_base_query()
+      |> where([_, p, _], p.org_id in ^org_ids)
+      |> select([dc, p], [p.org_id, count(dc.id)])
+      |> group_by([_, p, _], p.org_id)
+      |> connection_status_counts()
+
+    for org_id <- org_ids, into: %{} do
+      {org_id, %{online: 0, offline: 0}}
+    end
+    |> to_connection_status(online, :online)
+    |> to_connection_status(offline, :offline)
+  end
+
+  @doc """
+  Get device connection information for Products.
+  """
+  @spec get_connection_status_by_products(product_ids :: [non_neg_integer()]) :: %{
+          non_neg_integer() => %{online: non_neg_integer(), offline: non_neg_integer()}
+        }
+  def get_connection_status_by_products(product_ids) when is_list(product_ids) do
+    %{online: online, offline: offline} =
+      connection_status_base_query()
+      |> where([_, p], p.id in ^product_ids)
+      |> select([dc, p], [p.id, count(dc.id)])
+      |> group_by([_, p], p.id)
+      |> connection_status_counts()
+
+    for product_id <- product_ids, into: %{} do
+      {product_id, %{online: 0, offline: 0}}
+    end
+    |> to_connection_status(online, :online)
+    |> to_connection_status(offline, :offline)
+  end
+
+  defp connection_status_base_query() do
+    DeviceConnection
+    |> join(:inner, [dc], p in assoc(dc, :product))
+    |> join(:inner, [dc], dev in assoc(dc, :device), on: dev.latest_connection_id == dc.id)
+  end
+
+  defp connection_status_counts(query) do
+    %{
+      online: where(query, [dc], dc.status == :connected) |> Repo.all(),
+      offline: where(query, [dc], dc.status != :connected) |> Repo.all()
+    }
+  end
+
+  defp to_connection_status(start, counts, status) do
+    counts
+    |> Enum.reduce(start, fn [id, count], acc ->
+      current = Map.get(acc, id, %{})
+      Map.put(acc, id, Map.put(current, status, count))
+    end)
   end
 
   @doc """
@@ -34,15 +98,15 @@ defmodule NervesHub.Devices.Connections do
   @doc """
   Creates a device connection, reported from device socket
   """
-  @spec device_connecting(non_neg_integer(), non_neg_integer()) ::
+  @spec device_connecting(Device.t(), non_neg_integer()) ::
           {:ok, DeviceConnection.t()} | {:error, Ecto.Changeset.t()}
-  def device_connecting(device_id, product_id) do
+  def device_connecting(device, product_id) do
     now = DateTime.utc_now()
 
     changeset =
       DeviceConnection.create_changeset(%{
         product_id: product_id,
-        device_id: device_id,
+        device_id: device.id,
         established_at: now,
         last_seen_at: now,
         status: :connecting
@@ -51,8 +115,10 @@ defmodule NervesHub.Devices.Connections do
     case Repo.insert(changeset) do
       {:ok, device_connection} ->
         Device
-        |> where(id: ^device_id)
+        |> where(id: ^device.id)
         |> Repo.update_all(set: [latest_connection_id: device_connection.id])
+
+        Tracker.connecting(device)
 
         {:ok, device_connection}
 
@@ -64,54 +130,57 @@ defmodule NervesHub.Devices.Connections do
   @doc """
   Creates a device connection, reported from device socket
   """
-  @spec device_connected(non_neg_integer()) :: :ok | :error
-  def device_connected(id) do
-    now = DateTime.utc_now()
-
+  @spec device_connected(Device.t(), connection_id :: binary()) :: :ok | :error
+  def device_connected(device, connection_id) do
     DeviceConnection
-    |> where(id: ^id)
+    |> where(id: ^connection_id)
+    |> where([dc], not (dc.status == :disconnected))
     |> Repo.update_all(
       set: [
-        last_seen_at: now,
+        last_seen_at: DateTime.utc_now(),
         status: :connected
       ]
     )
     |> case do
-      {1, _} -> :ok
-      _ -> :error
+      {1, _} ->
+        Tracker.online(device)
+        :ok
+
+      _ ->
+        :error
     end
   end
 
   @doc """
   Updates the `last_seen_at`field for a device connection with current timestamp
   """
-  @spec device_heartbeat(Device.t(), UUIDv7.t()) :: :ok
+  @spec device_heartbeat(Device.t(), UUIDv7.t()) :: :ok | :error
   def device_heartbeat(device, id) do
-    {1, nil} =
-      DeviceConnection
-      |> where([dc], dc.id == ^id)
-      |> Repo.update_all(
-        set: [
-          status: "connected",
-          last_seen_at: DateTime.utc_now()
-        ]
-      )
-
-    Phoenix.Channel.Server.broadcast_from!(
-      NervesHub.PubSub,
-      self(),
-      "device:#{device.identifier}:internal",
-      "connection:heartbeat",
-      %{}
+    DeviceConnection
+    |> where([dc], dc.id == ^id)
+    |> where([dc], not (dc.status == :disconnected))
+    |> Repo.update_all(
+      set: [
+        status: :connected,
+        last_seen_at: DateTime.utc_now()
+      ]
     )
+    |> case do
+      {1, _} ->
+        Tracker.heartbeat(device)
+        :ok
+
+      _ ->
+        :error
+    end
   end
 
   @doc """
   Updates `status` and relevant timestamps for a device connection record,
   and stores the reason for disconnection if provided.
   """
-  @spec device_disconnected(UUIDv7.t(), String.t() | nil) :: :ok | :error
-  def device_disconnected(ref_id, reason \\ nil) do
+  @spec device_disconnected(Device.t(), UUIDv7.t(), String.t() | nil) :: :ok | {:error, any()}
+  def device_disconnected(device, ref_id, reason \\ nil) do
     now = DateTime.utc_now()
 
     DeviceConnection
@@ -128,8 +197,12 @@ defmodule NervesHub.Devices.Connections do
       timeout: 60_000
     )
     |> case do
-      {1, _} -> :ok
-      _ -> :error
+      {1, _} ->
+        Tracker.offline(device)
+        :ok
+
+      res ->
+        {:error, res}
     end
   end
 

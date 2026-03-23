@@ -4,13 +4,12 @@ defmodule NervesHubWeb.API.ProductController do
 
   alias NervesHub.Products
   alias NervesHub.Products.Product
-
   alias NervesHubWeb.API.Schemas.ProductSchemas
 
   tags(["Products"])
   security([%{}, %{"bearer_auth" => []}])
 
-  plug(:validate_role, [org: :admin] when action in [:create, :delete, :update])
+  plug(:validate_role, [org: :admin] when action in [:create, :delete])
   plug(:validate_role, [org: :view] when action in [:show])
 
   operation(:index,
@@ -28,8 +27,8 @@ defmodule NervesHubWeb.API.ProductController do
     ]
   )
 
-  def index(%{assigns: %{user: user, org: org}} = conn, _params) do
-    products = Products.get_products_by_user_and_org(user, org)
+  def index(%{assigns: %{current_scope: scope}} = conn, _params) do
+    products = Products.get_products(scope)
     render(conn, :index, products: products)
   end
 
@@ -54,7 +53,7 @@ defmodule NervesHubWeb.API.ProductController do
     ]
   )
 
-  def create(%{assigns: %{org: org}} = conn, params) do
+  def create(%{assigns: %{current_scope: %{org: org}}} = conn, params) do
     params =
       params
       |> Map.take(["name"])
@@ -117,39 +116,6 @@ defmodule NervesHubWeb.API.ProductController do
   def delete(%{assigns: %{product: product}} = conn, _params) do
     with {:ok, %Product{}} <- Products.delete_product(product) do
       send_resp(conn, :no_content, "")
-    end
-  end
-
-  operation(:update,
-    summary: "Update an Organizations Product",
-    parameters: [
-      org_name: [
-        in: :path,
-        description: "Organization Name",
-        type: :string,
-        example: "example_org"
-      ],
-      product_name: [
-        in: :path,
-        description: "Product Name",
-        type: :string,
-        example: "example_product"
-      ]
-    ],
-    request_body: {
-      "Product update request body",
-      "application/json",
-      ProductSchemas.ProductUpdateRequest,
-      required: true
-    },
-    responses: [
-      ok: {"Product response", "application/json", ProductSchemas.Product}
-    ]
-  )
-
-  def update(%{assigns: %{product: product}} = conn, %{"product" => params}) do
-    with {:ok, product} <- Products.update_product(product, params) do
-      render(conn, :show, product: product)
     end
   end
 end

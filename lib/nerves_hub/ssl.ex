@@ -5,7 +5,9 @@ defmodule NervesHub.SSL do
 
   alias NervesHub.Certificate
   alias NervesHub.Devices
+  alias NervesHub.Devices.CACertificate.JITP
   alias NervesHub.Devices.Device
+  alias X509.Certificate.Extension
 
   @type pkix_path_validation_reason ::
           :cert_expired
@@ -27,7 +29,7 @@ defmodule NervesHub.SSL do
           | pkix_path_validation_reason()
   @type event ::
           {:bad_cert, reason()}
-          | {:extension, X509.Certificate.Extension.t()}
+          | {:extension, Extension.t()}
           | :valid
           | :valid_peer
 
@@ -85,24 +87,16 @@ defmodule NervesHub.SSL do
         {:valid, state}
 
       {:error, {:bad_cert, reason}} ->
-        :telemetry.execute([:nerves_hub, :ssl, :fail], %{count: 1})
-
-        {:fail, reason}
+        verify_failed(reason, otp_cert)
 
       {:error, _} ->
-        :telemetry.execute([:nerves_hub, :ssl, :fail], %{count: 1})
-
-        {:fail, :registration_failed}
+        verify_failed(:registration_failed, otp_cert)
 
       reason when is_atom(reason) ->
-        :telemetry.execute([:nerves_hub, :ssl, :fail], %{count: 1})
-
-        {:fail, reason}
+        verify_failed(reason, otp_cert)
 
       _ ->
-        :telemetry.execute([:nerves_hub, :ssl, :fail], %{count: 1})
-
-        {:fail, :unknown_server_error}
+        verify_failed(:unknown_server_error, otp_cert)
     end
   end
 
@@ -144,12 +138,10 @@ defmodule NervesHub.SSL do
          der = Certificate.to_der(otp_cert),
          verify_state = {X509.Certificate.from_der!(db_ca.der), !!db_ca.check_expiration},
          {:ok, _} <-
-           :public_key.pkix_path_validation(db_ca.der, [der],
-             verify_fun: {&path_verify/3, verify_state}
-           ),
+           :public_key.pkix_path_validation(db_ca.der, [der], verify_fun: {&path_verify/3, verify_state}),
          {:ok, device} <- maybe_jitp_device(cn, db_ca),
-         :ok <- check_new_public_key_allowed(device),
-         params <- params_from_otp_cert(otp_cert) do
+         :ok <- check_new_public_key_allowed(device) do
+      params = params_from_otp_cert(otp_cert)
       Devices.create_device_certificate(device, params)
     end
   end
@@ -165,15 +157,13 @@ defmodule NervesHub.SSL do
          der = Certificate.to_der(otp_cert),
          verify_state = {X509.Certificate.from_der!(db_ca.der), !!db_ca.check_expiration},
          {:ok, _} <-
-           :public_key.pkix_path_validation(db_ca.der, [der],
-             verify_fun: {&path_verify/3, verify_state}
-           ),
-         params <- params_from_otp_cert(otp_cert) do
+           :public_key.pkix_path_validation(db_ca.der, [der], verify_fun: {&path_verify/3, verify_state}) do
+      params = params_from_otp_cert(otp_cert)
       Devices.create_device_certificate(device, params)
     end
   end
 
-  defp path_verify(ca, {:bad_cert, :cert_expired}, {ca, _check_expiration? = false} = state) do
+  defp path_verify(ca, {:bad_cert, :cert_expired}, {ca, false = _check_expiration?} = state) do
     # The Signer CA is technically expired, but expiration checks are disabled
     # so we should let this through the rest of the verification
     {:valid, state}
@@ -227,7 +217,7 @@ defmodule NervesHub.SSL do
     end
   end
 
-  defp maybe_jitp_device(cn, %{org_id: org_id, jitp: %Devices.CACertificate.JITP{} = jitp}) do
+  defp maybe_jitp_device(cn, %{org_id: org_id, jitp: %JITP{} = jitp}) do
     case Devices.get_device_by(identifier: cn, org_id: org_id) do
       {:ok, %{deleted_at: nil}} = resp ->
         resp
@@ -282,5 +272,18 @@ defmodule NervesHub.SSL do
       serial: Certificate.get_serial_number(otp_cert),
       ski: Certificate.get_ski(otp_cert)
     }
+  end
+
+  defp verify_failed(reason, otp_cert) do
+    cert_serial = Certificate.get_serial_number(otp_cert)
+    cert_subject = Certificate.get_common_name(otp_cert)
+
+    :telemetry.execute([:nerves_hub, :ssl, :fail], %{count: 1}, %{
+      reason: reason,
+      cert_serial: cert_serial,
+      cert_subject: cert_subject
+    })
+
+    {:fail, reason}
   end
 end

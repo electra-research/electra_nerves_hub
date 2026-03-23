@@ -1,23 +1,10 @@
 defmodule NervesHubWeb.DeviceControllerTest do
-  use NervesHubWeb.ConnCase.Browser, async: false
+  use NervesHubWeb.ConnCase.Browser, async: true
 
   alias NervesHub.Fixtures
 
   setup %{user: user, org: org} do
     [product: Fixtures.product_fixture(user, org)]
-  end
-
-  describe "console" do
-    test "shows information about device", %{conn: conn, user: user, org: org, product: product} do
-      org_key = Fixtures.org_key_fixture(org, user)
-      firmware = Fixtures.firmware_fixture(org_key, product)
-      device = Fixtures.device_fixture(org, product, firmware)
-
-      conn
-      |> visit("/org/#{org.name}/#{product.name}/devices/#{device.identifier}/console")
-      |> assert_has("p", text: "Console")
-      |> assert_has("p", text: "Chat")
-    end
   end
 
   describe "certificates" do
@@ -29,14 +16,9 @@ defmodule NervesHubWeb.DeviceControllerTest do
     } do
       [cert | _] = NervesHub.Devices.get_device_certificates(device)
 
-      conn =
-        conn
-        |> get(
-          "/org/#{org.name}/#{product.name}/devices/#{device.identifier}/certificate/#{cert.serial}/download"
-        )
+      conn = get(conn, ~p"/org/#{org}/#{product}/devices/#{device}/certificate/#{cert.serial}/download")
 
-      [str] =
-        Plug.Conn.get_resp_header(conn, "content-disposition")
+      [str] = Plug.Conn.get_resp_header(conn, "content-disposition")
 
       assert str =~ "attachment; filename"
       assert conn.resp_body =~ "-----BEGIN CERTIFICATE-----"

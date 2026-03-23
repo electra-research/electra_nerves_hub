@@ -1,9 +1,8 @@
 defmodule NervesHub.Accounts.RemoveAccount do
-  import Ecto.Query
   import Ecto.Changeset
+  import Ecto.Query
 
   alias Ecto.Multi
-
   alias NervesHub.Accounts.Invite
   alias NervesHub.Accounts.Org
   alias NervesHub.Accounts.OrgKey
@@ -20,9 +19,8 @@ defmodule NervesHub.Accounts.RemoveAccount do
   alias NervesHub.Firmwares.FirmwareTransfer
   alias NervesHub.ManagedDeployments.DeploymentGroup
   alias NervesHub.Products.Product
-  alias NervesHub.Scripts.Script
-
   alias NervesHub.Repo
+  alias NervesHub.Scripts.Script
 
   def remove_account(user_id) do
     Multi.new()
@@ -42,11 +40,11 @@ defmodule NervesHub.Accounts.RemoveAccount do
     |> Multi.update_all(:soft_delete_products, &soft_delete_by_org_id(Product, &1), [])
     |> Multi.update_all(:soft_delete_devices, &soft_delete_by_org_id(Device, &1), [])
     |> Multi.update_all(:soft_delete_org_users, &soft_delete_by_org_id(OrgUser, &1), [])
-    |> Multi.update_all(:soft_delete_orgs, &soft_delete_orgs(&1), [])
-    |> Multi.update_all(:nilify_script_creations, &nilify_script_creations(&1), [])
-    |> Multi.update_all(:nilify_script_edits, &nilify_script_edits(&1), [])
+    |> Multi.update_all(:soft_delete_orgs, &soft_delete_orgs/1, [])
+    |> Multi.update_all(:nilify_script_creations, &nilify_script_creations/1, [])
+    |> Multi.update_all(:nilify_script_edits, &nilify_script_edits/1, [])
     |> Multi.update(:soft_delete_user, &soft_delete_user/1)
-    |> Repo.transaction()
+    |> Repo.transact()
   end
 
   defp query_org_users() do

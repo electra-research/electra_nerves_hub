@@ -15,15 +15,22 @@ defmodule NervesHubWeb.ChannelCase do
 
   use ExUnit.CaseTemplate
 
+  alias Ecto.Adapters.SQL.Sandbox, as: SQLSandbox
+
   using do
     quote do
+      use DefaultMocks
+      use Oban.Testing, repo: NervesHub.Repo
+      use AssertEventually, timeout: 500, interval: 50
+
+      import Ecto.Query
       # Import conveniences for testing with channels
       import Phoenix.ChannelTest
-      import Ecto.Query
 
-      use DefaultMocks
-      use Oban.Testing, repo: NervesHub.ObanRepo
-      use AssertEventually, timeout: 500, interval: 50
+      alias NervesHub.Devices.DeviceConnection
+
+      # Enable tmp_dir per test case
+      @moduletag :tmp_dir
 
       # The default endpoint for testing
       @endpoint NervesHubWeb.DeviceEndpoint
@@ -38,7 +45,7 @@ defmodule NervesHubWeb.ChannelCase do
 
       def assert_online_and_available(device) do
         device_connection_query =
-          NervesHub.Devices.DeviceConnection
+          DeviceConnection
           |> where(status: :connected)
           |> where(device_id: ^device.id)
 
@@ -54,17 +61,14 @@ defmodule NervesHubWeb.ChannelCase do
 
   setup do
     # Explicitly get a connection before each test
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(NervesHub.Repo)
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(NervesHub.ObanRepo)
+    :ok = SQLSandbox.checkout(NervesHub.Repo)
   end
 
   setup tags do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(NervesHub.Repo, shared: not tags[:async])
-    pid2 = Ecto.Adapters.SQL.Sandbox.start_owner!(NervesHub.ObanRepo, shared: not tags[:async])
+    pid = SQLSandbox.start_owner!(NervesHub.Repo, shared: not tags[:async])
 
     on_exit(fn ->
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
-      Ecto.Adapters.SQL.Sandbox.stop_owner(pid2)
+      SQLSandbox.stop_owner(pid)
     end)
 
     :ok

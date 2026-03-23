@@ -1,10 +1,9 @@
 defmodule NervesHub.Telemetry.FilteredSampler do
   # Inspired by https://arathunku.com/b/2024/notes-on-adding-opentelemetry-to-an-elixir-app/
 
-  require OpenTelemetry.Tracer, as: Tracer
-  require Logger
-
   @behaviour :otel_sampler
+
+  alias OpenTelemetry.Tracer
 
   @ignored_static_paths ~r/^\/(assets|fonts|images|css)\/.*/
 
@@ -34,15 +33,7 @@ defmodule NervesHub.Telemetry.FilteredSampler do
   def description(_sampler_config), do: "NervesHub.Sampler"
 
   @impl :otel_sampler
-  def should_sample(
-        ctx,
-        trace_id,
-        links,
-        span_name,
-        span_kind,
-        attributes,
-        sampler_config
-      ) do
+  def should_sample(ctx, trace_id, links, span_name, span_kind, attributes, sampler_config) do
     result = drop_trace?(span_name, attributes)
 
     tracestate = Tracer.current_span_ctx(ctx) |> OpenTelemetry.Span.tracestate()

@@ -6,6 +6,7 @@ defmodule NervesHubWeb.LayoutView do
   alias NervesHub.Accounts.User
   alias NervesHub.Devices
   alias NervesHub.Products.Product
+  alias Timex.Format.Duration.Formatter
 
   def product(%{assigns: %{product: %Product{} = product}}) do
     product
@@ -48,7 +49,7 @@ defmodule NervesHubWeb.LayoutView do
   def humanize_seconds(seconds) do
     seconds
     |> Timex.Duration.from_seconds()
-    |> Timex.Format.Duration.Formatter.format(:humanized)
+    |> Formatter.format(:humanized)
   end
 
   @doc """
@@ -200,14 +201,11 @@ defmodule NervesHubWeb.LayoutView do
     """
   end
 
-  def sidebar_links(%{path_info: ["account" | _tail]} = conn),
-    do: sidebar_account(conn)
+  def sidebar_links(%{path_info: ["account" | _tail]} = conn), do: sidebar_account(conn)
 
-  def sidebar_links(%{path_info: ["org", "new"]}),
-    do: []
+  def sidebar_links(%{path_info: ["org", "new"]}), do: []
 
-  def sidebar_links(%{path_info: ["org", _org_name | _tail]} = conn),
-    do: sidebar_org(conn)
+  def sidebar_links(%{path_info: ["org", _org_name | _tail]} = conn), do: sidebar_org(conn)
 
   def sidebar_links(_conn), do: []
 
@@ -254,11 +252,6 @@ defmodule NervesHubWeb.LayoutView do
         title: "Personal Info",
         active: "",
         href: ~p"/account"
-      },
-      %{
-        title: "Access Tokens",
-        active: "",
-        href: ~p"/account/tokens"
       }
     ]
     |> sidebar_active(conn)

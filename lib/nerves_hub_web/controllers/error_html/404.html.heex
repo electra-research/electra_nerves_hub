@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-surface">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="" />
+    <meta name="author" content="" />
+
+    <meta name="csrf-token" content={get_csrf_token()} />
+
+    <meta name="description" content="" />
+    <meta name="author" content="" />
+
+    <link rel="icon" type="image/png" href="/images/favicon-96x96.png" sizes="96x96" />
+    <link rel="icon" type="image/svg+xml" href="/images/favicon.svg" />
+    <link rel="shortcut icon" href="/images/favicon.ico" />
+
+    <title>Page not found · #{Application.get_env(:nerves_hub, :web_title_suffix)}"}</title>
+    <link rel="stylesheet" href={static_path("/assets/css/app.css")} />
+    <script defer phx-track-static type="text/javascript" src={static_path("/assets/js/app.js")}>
+    </script>
+  </head>
+
+  <body class="h-full">
+    <div class="flex flex-col items-center justify-center h-full gap-8">
+      <div class="flex flex-col items-center justify-center">
+        <img src="/images/product.svg" alt="" />
+        <p class="pt-4 text-lg font-semibold">Sorry, the page you are looking can't be found.</p>
+      </div>
+
+      <div class="">
+        If you think this is a mistake, please
+        <a href="https://github.com/nerves-hub/nerves_hub_web/issues" target="_blank" rel="noopener noreferrer" class="underline text-indigo-500">report an issue</a>
+      </div>
+    </div>
+  </body>
+</html>

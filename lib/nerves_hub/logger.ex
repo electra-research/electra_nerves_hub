@@ -25,22 +25,28 @@ defmodule NervesHub.Logger do
 
   @doc false
   def attach() do
-    events = [
-      [:phoenix, :endpoint, :stop],
-      [:nerves_hub, :devices, :invalid_auth],
-      [:nerves_hub, :devices, :connect],
-      [:nerves_hub, :devices, :disconnect],
-      [:nerves_hub, :devices, :duplicate_connection],
-      [:nerves_hub, :devices, :update, :automatic],
-      [:nerves_hub, :devices, :update, :successful],
-      [:nerves_hub, :managed_deployments, :set_deployment_group, :none_found],
-      [:nerves_hub, :managed_deployments, :set_deployment_group, :one_found],
-      [:nerves_hub, :managed_deployments, :set_deployment_group, :multiple_found]
-    ]
+    events =
+      [
+        [:phoenix, :endpoint, :stop],
+        [:nerves_hub, :devices, :invalid_auth],
+        [:nerves_hub, :devices, :connect],
+        [:nerves_hub, :devices, :connecting_code_failure],
+        [:nerves_hub, :devices, :disconnect],
+        [:nerves_hub, :devices, :duplicate_connection],
+        [:nerves_hub, :devices, :network_interface_mismatch],
+        [:nerves_hub, :devices, :update, :automatic],
+        [:nerves_hub, :devices, :update, :successful],
+        [:nerves_hub, :managed_deployments, :set_deployment_group, :none_found],
+        [:nerves_hub, :managed_deployments, :set_deployment_group, :one_found],
+        [:nerves_hub, :managed_deployments, :set_deployment_group, :multiple_found],
+        [:nerves_hub, :ssl, :fail]
+      ]
 
-    Enum.each(events, fn event ->
+    exclusions = Application.get_env(:nerves_hub, :logger_exclusions)
+
+    for event <- events, Enum.join(event, ".") not in exclusions do
       :ok = :telemetry.attach({__MODULE__, event}, event, &__MODULE__.log_event/4, :ok)
-    end)
+    end
   end
 
   # Phoenix request logging
@@ -71,7 +77,10 @@ defmodule NervesHub.Logger do
         event: "nerves_hub.devices.invalid_auth",
         auth: to_string(metadata[:auth]),
         reason: inspect(metadata[:reason]),
-        product_key: metadata[:product_key]
+        org_id: metadata[:org_id],
+        product_id: metadata[:product_id],
+        shared_key: metadata[:shared_key],
+        identifier: metadata[:device_identifier]
       }
       |> Map.reject(fn {_key, val} -> is_nil(val) end)
 
@@ -84,6 +93,14 @@ defmodule NervesHub.Logger do
       ref_id: metadata[:ref_id],
       identifier: metadata[:identifier],
       firmware_uuid: metadata[:firmware_uuid]
+    )
+  end
+
+  def log_event([:nerves_hub, :devices, :connecting_code_failure], _, metadata, _) do
+    Logger.info("Connecting code failure",
+      event: "nerves_hub.devices.connecting_code_failure",
+      output: metadata[:output],
+      identifier: metadata[:identifier]
     )
   end
 
@@ -110,6 +127,26 @@ defmodule NervesHub.Logger do
     )
   end
 
+  def log_event([:nerves_hub, :devices, :join_failure], _, metadata, _) do
+    extra =
+      %{
+        event: "nerves_hub.devices.join_failure",
+        error: inspect(metadata[:error]),
+        channel: metadata[:channel],
+        identifier: metadata[:device_identifier]
+      }
+      |> Map.reject(fn {_key, val} -> is_nil(val) end)
+
+    Logger.warning("Join failure", extra)
+  end
+
+  def log_event([:nerves_hub, :devices, :network_interface_mismatch], _, metadata, _) do
+    Logger.warning("Network interface mismatch between device socket and device downloader detected",
+      event: "nerves_hub.devices.network_interface_mismatch",
+      params: inspect(metadata[:params])
+    )
+  end
+
   def log_event([:nerves_hub, :devices, :update, :automatic], _, metadata, _) do
     Logger.info("Device received update",
       event: "nerves_hub.devices.update.automatic",
@@ -127,24 +164,39 @@ defmodule NervesHub.Logger do
     )
   end
 
-  def log_event(
-        [:nerves_hub, :managed_deployments, :set_deployment_group, :none_found],
-        _,
-        metadata,
-        _
-      ) do
+  def log_event([:nerves_hub, :devices, :unhandled_info], _, metadata, _) do
+    extra =
+      %{
+        event: "nerves_hub.devices.unhandled_info",
+        msg: inspect(metadata[:msg]),
+        params: inspect(metadata[:params]),
+        identifier: metadata[:device_identifier]
+      }
+      |> Map.reject(fn {_key, val} -> is_nil(val) end)
+
+    Logger.warning("Unhandled handle_info message", extra)
+  end
+
+  def log_event([:nerves_hub, :devices, :unhandled_in], _, metadata, _) do
+    extra =
+      %{
+        event: "nerves_hub.devices.unhandled_in",
+        msg: inspect(metadata[:msg]),
+        identifier: metadata[:device_identifier]
+      }
+      |> Map.reject(fn {_key, val} -> is_nil(val) end)
+
+    Logger.warning("Unhandled handle_in message", extra)
+  end
+
+  def log_event([:nerves_hub, :managed_deployments, :set_deployment_group, :none_found], _, metadata, _) do
     Logger.info("No matching deployment groups",
       event: "nerves_hub.managed_deployments.set_deployment_group.none_found",
       identifier: metadata[:device].identifier
     )
   end
 
-  def log_event(
-        [:nerves_hub, :managed_deployments, :set_deployment_group, :one_found],
-        _,
-        metadata,
-        _
-      ) do
+  def log_event([:nerves_hub, :managed_deployments, :set_deployment_group, :one_found], _, metadata, _) do
     Logger.info("Deployment match found",
       event: "nerves_hub.managed_deployments.set_deployment_group.one_found",
       identifier: metadata[:device].identifier,
@@ -152,17 +204,46 @@ defmodule NervesHub.Logger do
     )
   end
 
-  def log_event(
-        [:nerves_hub, :managed_deployments, :set_deployment_group, :multiple_found],
-        _,
-        metadata,
-        _
-      ) do
+  def log_event([:nerves_hub, :managed_deployments, :set_deployment_group, :multiple_found], _, metadata, _) do
     Logger.info("More than one deployment match found, setting to the first",
       event: "nerves_hub.managed_deployments.set_deployment_group.multiple_found",
       identifier: metadata[:device].identifier,
       deployment_id: metadata[:deployment_group].id
     )
+  end
+
+  def log_event([:nerves_hub, :ssl, :fail], _, metadata, _) do
+    Logger.info("SSL certificate verification failed",
+      event: "nerves_hub.ssl.fail",
+      reason: metadata[:reason],
+      cert_serial: metadata[:cert_serial],
+      cert_subject: metadata[:cert_subject]
+    )
+  end
+
+  @doc """
+  The Erlang SSL application will log issues or failures related to verification of certificates.
+
+  This filter is designed to ignore SSL handshake errors that occur during the `:certify` state that are not helpful or hard to understand.
+
+  eg. TLS :server: In state :certify at ssl_handshake.erl:2201 generated SERVER ALERT: Fatal - Handshake Failure - :unknown_ca
+  """
+  def ssl_log_filter(log_event, _opts) do
+    case log_event do
+      %{
+        msg:
+          {:report,
+           %{
+             alert: {:alert, _, _, %{file: ~c"ssl_handshake.erl"}, _, _},
+             role: :server,
+             statename: :certify
+           }}
+      } ->
+        :stop
+
+      _ ->
+        :ignore
+    end
   end
 
   # Helper functions
@@ -186,9 +267,8 @@ defmodule NervesHub.Logger do
     |> Enum.join()
   end
 
-  defp request_path(%{request_path: request_path, query_string: query_string})
-       when query_string not in ["", nil],
-       do: request_path <> "?" <> query_string
+  defp request_path(%{request_path: request_path, query_string: query_string}) when query_string not in ["", nil],
+    do: request_path <> "?" <> query_string
 
   defp request_path(%{request_path: request_path}), do: request_path
   defp request_path(_), do: nil

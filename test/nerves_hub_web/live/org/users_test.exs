@@ -35,10 +35,23 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
       conn
       |> visit("/org/#{org.name}/settings/users/#{org_user.user_id}/edit")
       |> assert_has("h1", text: org_user.user.name)
-      |> select("Role", option: "Admin")
+      |> select("Role", option: "Admin", exact: false)
       |> click_button("Update")
       |> assert_path("/org/#{org.name}/settings/users")
       |> assert_has("div", text: "Role updated")
+    end
+
+    test "clicking edit button navigates to edit page", %{conn: conn, org: org} do
+      {:ok, org_user} = Accounts.add_org_user(org, Fixtures.user_fixture(), %{role: :view})
+
+      conn
+      |> visit("/org/#{org.name}/settings/users")
+      |> assert_has("h1", text: "Users")
+      |> assert_has("td", text: org_user.user.name)
+      |> click_link("Edit")
+      |> assert_path("/org/#{org.name}/settings/users/#{org_user.user_id}/edit")
+      |> assert_has("h1", text: org_user.user.name)
+      |> assert_has("label", text: "Role")
     end
 
     test "delete org user", %{conn: conn, org: org} do
@@ -47,7 +60,7 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
       conn
       |> visit("/org/#{org.name}/settings/users")
       |> assert_has("h1", text: "Users")
-      |> click_link("a[phx-value-user_id=\"#{org_user.user_id}\"]", "Delete")
+      |> click_link("button[phx-value-user_id=\"#{org_user.user_id}\"]", "Delete")
       |> assert_path("/org/#{org.name}/settings/users")
       |> assert_has("div", text: "User removed")
 
@@ -65,7 +78,7 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
       |> click_button("Send Invitation")
       |> assert_path("/org/#{org.name}/settings/users")
       |> assert_has("div", text: "User has been invited")
-      |> assert_has("h1", text: "Outstanding Invites")
+      |> assert_has("h2", text: "Outstanding Invites")
       |> assert_has("td", text: "josh@mrjosh.com")
 
       assert_email_sent(subject: "NervesHub: You have been invited to join Jeff")
@@ -95,7 +108,7 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
 
       conn
       |> visit("/org/#{org.name}/settings/users")
-      |> click_link("Rescind")
+      |> click_button("Rescind")
       |> assert_has("div", text: "Invite rescinded")
       |> assert_path("/org/#{org.name}/settings/users")
       |> refute_has("h1", text: "Outstanding Invites")
@@ -129,7 +142,7 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
       conn =
         conn
         |> visit("/org/#{org.name}/settings/users")
-        |> assert_has("h1", text: "Outstanding Invites")
+        |> assert_has("h2", text: "Outstanding Invites")
         |> assert_has("td", text: "josh@mrjosh.com")
 
       invite
@@ -137,7 +150,7 @@ defmodule NervesHubWeb.Live.Org.UsersTest do
       |> NervesHub.Repo.update()
 
       conn
-      |> click_link("Rescind")
+      |> click_button("Rescind")
       |> refute_has("td", text: "josh@mrjosh.com")
       |> assert_has("div", text: "Invite couldn't be rescinded as the invite has been accepted.")
 
