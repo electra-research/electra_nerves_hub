@@ -23,8 +23,7 @@ defmodule NervesHub.Logs.BatchProcessorTest do
     expected_name = "#{did}/#{DateTime.to_date(dt)}/#{dt}.txt"
                     |> String.replace(" ", "_")
     expected_contents = logs
-                        |> Enum.map(fn l -> "#{l.logged_at} [#{l.level}] #{l.message}" end)
-                        |> Enum.join("\n")
+                        |> Enum.map_join(fn l -> "#{l.logged_at} [#{l.level}] #{l.message}\n" end)
     {^expected_name, ^expected_contents} = BatchProcessor.object_name_and_contents(did, logs)
   end
 
