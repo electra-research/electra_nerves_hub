@@ -31,13 +31,13 @@ defmodule NervesHub.Logs.BatchProcessor do
     dt = DateTime.truncate(l0.logged_at, :millisecond)
     date = DateTime.to_date(dt)
     name = "#{did}/#{date}/#{dt}.txt" |> String.replace(" ", "_")
-    contents = Enum.join(Enum.map(logs, &logfmt/1), "\n")
+    contents = Enum.map_join(logs, &logfmt/1)
     {name, contents}
   end
 
 
   defp logfmt(l) do
-    "#{l.logged_at} [#{l.level}] #{l.message}"
+    "#{l.logged_at} [#{l.level}] #{l.message}\n"
   end
 
   defp store_logs(logs) do
