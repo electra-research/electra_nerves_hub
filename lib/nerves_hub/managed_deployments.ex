@@ -121,6 +121,19 @@ defmodule NervesHub.ManagedDeployments do
     |> Repo.one!()
   end
 
+  @spec get_by_product_and_platforms(Product.t(), [binary()]) :: [DeploymentGroup.t()]
+  def get_by_product_and_platforms(_product, []), do: []
+
+  def get_by_product_and_platforms(product, platforms) when is_list(platforms) do
+    DeploymentGroup
+    |> from(as: :deployment_group)
+    |> join_current_release(true)
+    |> where(product_id: ^product.id)
+    |> where([firmware: f], f.platform in ^platforms)
+    |> order_by([d], asc: d.name)
+    |> Repo.all()
+  end
+
   @spec get_by_product_and_platform(Product.t(), binary()) :: [DeploymentGroup.t()]
   def get_by_product_and_platform(product, platform) do
     DeploymentGroup
@@ -277,9 +290,9 @@ defmodule NervesHub.ManagedDeployments do
     Repo.preload(deployment_group, [current_release: [:firmware, :archive]], force: force)
   end
 
-  def create_deployment_release(deployment_group, firmware, archive, user, opts \\ []) do
+  def create_deployment_release(deployment_group, firmware, archive, user, params, opts \\ []) do
     Repo.transact(fn ->
-      dr_changeset = DeploymentRelease.new_changeset(deployment_group, firmware, archive, user)
+      dr_changeset = DeploymentRelease.new_changeset(deployment_group, firmware, archive, params, user)
 
       with {:ok, release} <- Repo.insert(dr_changeset),
            {:ok, deployment_group} = recalculate_current_release(deployment_group),
@@ -436,7 +449,12 @@ defmodule NervesHub.ManagedDeployments do
   defp maybe_trigger_delta_generation(_deployment_group, _changeset), do: {:ok, :no_deltas_started}
 
   @spec trigger_delta_generation_for_deployment_group(DeploymentGroup.t()) ::
-          {:ok, :deltas_started | :deltas_already_generated | :some_deltas_started} | {:error, :delta_generation_failed}
+          {:ok, :deltas_started | :deltas_already_generated | :some_deltas_started}
+          | {:error, :deltas_not_enabled | :delta_generation_failed}
+  def trigger_delta_generation_for_deployment_group(%{delta_updatable: false}) do
+    {:error, :deltas_not_enabled}
+  end
+
   def trigger_delta_generation_for_deployment_group(deployment_group) do
     Devices.get_device_firmware_for_delta_generation_by_deployment_group(deployment_group.id)
     |> Enum.map(fn {source_id, target_id} ->

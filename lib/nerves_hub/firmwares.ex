@@ -22,6 +22,8 @@ defmodule NervesHub.Firmwares do
 
   require Logger
 
+  @firmware_partial_chunk_size 1024 * 1024
+
   @type upload_file_2 :: (filepath :: String.t(), filename :: String.t() -> :ok | {:error, any()})
 
   defp firmware_upload_config(), do: Application.fetch_env!(:nerves_hub, :firmware_upload)
@@ -94,6 +96,16 @@ defmodule NervesHub.Firmwares do
     |> where([f], f.product_id == ^product_id)
     |> order_by([f], [fragment("? collate numeric desc", f.version), desc: :inserted_at])
     |> with_product()
+    |> Repo.all()
+  end
+
+  @spec get_firmwares_by_product_and_platform(Product.t(), String.t()) :: [Firmware.t()]
+  def get_firmwares_by_product_and_platform(product, platform) do
+    Firmware
+    |> where([f], f.product_id == ^product.id)
+    |> where([f], f.platform == ^platform)
+    |> order_by([f], [fragment("? collate numeric desc", f.version), desc: :inserted_at])
+    |> limit(25)
     |> Repo.all()
   end
 
@@ -532,6 +544,9 @@ defmodule NervesHub.Firmwares do
         target_firmware.uuid
       )
 
+    checksum = firmware_checksum(delta_file_metadata.filepath)
+    partials_checksums = partials_checksums(delta_file_metadata.filepath)
+
     changeset =
       FirmwareDelta.complete_changeset(
         firmware_delta,
@@ -540,7 +555,9 @@ defmodule NervesHub.Firmwares do
         delta_file_metadata.source_size,
         delta_file_metadata.target_size,
         delta_file_metadata.tool_metadata,
-        upload_metadata
+        upload_metadata,
+        checksum,
+        partials_checksums
       )
 
     with {:ok, firmware_delta} <- Repo.update(changeset),
@@ -584,7 +601,8 @@ defmodule NervesHub.Firmwares do
              get_firmware_delta_by_source_and_target(source_id, target_id, [:processing, :completed]),
            {_, {:ok, _}} <-
              {:delta_insert, start_firmware_delta(source_id, target_id, recalculate_deployment_statuses)},
-           {_, {:ok, _}} <- {:job, Oban.insert(FirmwareDeltaBuilder.new(%{source_id: source_id, target_id: target_id}))} do
+           {_, {:ok, _}} <-
+             {:job, Oban.insert(FirmwareDeltaBuilder.new(%{source_id: source_id, target_id: target_id}))} do
         {:ok, :started}
       else
         {:ok, %FirmwareDelta{}} ->
@@ -662,7 +680,8 @@ defmodule NervesHub.Firmwares do
       |> Repo.update()
       |> notify_firmware_delta_target()
 
-    {:ok, _} = ManagedDeployments.recalculate_deployment_group_status_by_firmware_id(firmware_delta.target_id)
+    {:ok, _} =
+      ManagedDeployments.recalculate_deployment_group_status_by_firmware_id(firmware_delta.target_id)
 
     {:ok, firmware_delta}
   end
@@ -737,7 +756,7 @@ defmodule NervesHub.Firmwares do
       filename = fm.uuid <> ".fw"
 
       params =
-        resolve_product(%{
+        %{
           architecture: fm.architecture,
           author: fm.author,
           description: fm.description,
@@ -758,10 +777,37 @@ defmodule NervesHub.Firmwares do
           vcs_identifier: fm.vcs_identifier,
           version: fm.version,
           tool_metadata: tm
-        })
+        }
+        |> calculate_checksums()
+        |> resolve_product()
 
       {:ok, params}
     end
+  end
+
+  defp calculate_checksums(params) do
+    params
+    |> Map.put(:checksum, firmware_checksum(params.filepath))
+    |> Map.put(:partials_checksums, partials_checksums(params.filepath))
+  end
+
+  def firmware_checksum(filepath) do
+    filepath
+    |> File.stream!(2048)
+    |> Enum.reduce(:crypto.hash_init(:sha256), fn bytes, hash_state ->
+      :crypto.hash_update(hash_state, bytes)
+    end)
+    |> :crypto.hash_final()
+    |> Base.encode16()
+  end
+
+  def partials_checksums(filepath) do
+    filepath
+    |> File.stream!(@firmware_partial_chunk_size)
+    |> Stream.map(fn chunk ->
+      :crypto.hash(:sha256, chunk) |> Base.encode16()
+    end)
+    |> Enum.to_list()
   end
 
   defp resolve_product(params) do

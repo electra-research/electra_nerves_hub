@@ -1,6 +1,7 @@
 defmodule NervesHubWeb.Live.Devices.Index do
   use NervesHubWeb, :live_view
 
+  alias NervesHub.DeviceEvents
   alias NervesHub.Devices
   alias NervesHub.Devices.Alarms
   alias NervesHub.Devices.Metrics
@@ -112,12 +113,17 @@ defmodule NervesHubWeb.Live.Devices.Index do
     |> assign(:visible?, true)
     |> assign(:live_refresh_timer, nil)
     |> assign(:live_refresh_pending?, false)
-    |> assign(:received_connection_change_identifiers, [])
+    |> assign(:received_connection_change_identifiers, %{})
     |> assign(:current_alarms, [])
     |> assign(:metrics_keys, [])
     |> assign(:deployment_groups, [])
     |> assign(:available_deployment_groups_for_filtered_platform, [])
     |> assign(:target_deployment_group, nil)
+    |> assign(:available_firmwares_for_filtered_platform, [])
+    |> assign(:target_firmware, nil)
+    |> assign(:selected_shared_deployment_group, nil)
+    |> assign(:selected_have_deployment_groups, false)
+    |> assign(:valid_deployment_groups_for_selected, [])
     |> assign(
       :soft_deleted_devices_exist,
       Devices.soft_deleted_devices_exist_for_product?(product.id)
@@ -245,7 +251,10 @@ defmodule NervesHubWeb.Live.Devices.Index do
           [device.id | selected_devices]
         end
 
-      {:noreply, assign(socket, :selected_devices, selected_devices)}
+      socket
+      |> assign(:selected_devices, selected_devices)
+      |> update_selected_device_info()
+      |> noreply()
     else
       _ ->
         {:noreply, put_flash(socket, :error, "Invalid device selection")}
@@ -260,18 +269,28 @@ defmodule NervesHubWeb.Live.Devices.Index do
          false <- Enum.any?(selected_devices) do
       selected_devices = Enum.map(devices.result, & &1.id)
 
-      {:noreply, assign(socket, :selected_devices, selected_devices)}
+      socket
+      |> assign(:selected_devices, selected_devices)
+      |> update_selected_device_info()
+      |> noreply()
     else
       {:loaded, false} ->
         {:noreply, put_flash(socket, :error, "Device list hasn't loaded yet")}
 
       _ ->
-        {:noreply, assign(socket, :selected_devices, [])}
+        socket
+        |> assign(:selected_devices, [])
+        |> update_selected_device_info()
+        |> noreply()
     end
   end
 
+  @decorate requires_permission(:"device:update")
   def handle_event("deselect-all", _, socket) do
-    {:noreply, assign(socket, %{selected_devices: [], available_deployment_groups_for_filtered_platform: []})}
+    socket
+    |> assign(%{selected_devices: [], available_deployment_groups_for_filtered_platform: []})
+    |> update_selected_device_info()
+    |> noreply()
   end
 
   def handle_event("validate-tags", %{"tags" => tags}, socket) do
@@ -329,6 +348,10 @@ defmodule NervesHubWeb.Live.Devices.Index do
     end
   end
 
+  def handle_event("target-deployment-group", params, socket) when not is_map_key(params, "deployment_group") do
+    {:noreply, assign(socket, target_deployment_group: nil)}
+  end
+
   def handle_event("target-deployment-group", %{"deployment_group" => ""}, socket) do
     {:noreply, assign(socket, target_deployment_group: nil)}
   end
@@ -336,12 +359,13 @@ defmodule NervesHubWeb.Live.Devices.Index do
   @decorate requires_permission(:"device:update")
   def handle_event("target-deployment-group", %{"deployment_group" => deployment_id_str}, socket) do
     %{
-      available_deployment_groups_for_filtered_platform: available
+      available_deployment_groups_for_filtered_platform: available,
+      valid_deployment_groups_for_selected: valid
     } = socket.assigns
 
     with {deployment_id, ""} <- Integer.parse(deployment_id_str),
          deployment_group when not is_nil(deployment_group) <-
-           Enum.find(available, &(&1.id == deployment_id)) do
+           Enum.find(available ++ valid, &(&1.id == deployment_id)) do
       {:noreply, assign(socket, target_deployment_group: deployment_group)}
     else
       _ ->
@@ -430,6 +454,63 @@ defmodule NervesHubWeb.Live.Devices.Index do
     end
   end
 
+  def handle_event("target-firmware", %{"firmware" => ""}, socket) do
+    {:noreply, assign(socket, target_firmware: nil)}
+  end
+
+  @decorate requires_permission(:"device:update")
+  def handle_event("target-firmware", %{"firmware" => firmware_uuid}, socket) do
+    firmware =
+      Enum.find(
+        socket.assigns.available_firmwares_for_filtered_platform,
+        &(&1.uuid == firmware_uuid)
+      )
+
+    {:noreply, assign(socket, target_firmware: firmware)}
+  end
+
+  @decorate requires_permission(:"device:update")
+  def handle_event("push-firmware-to-devices", _, socket) do
+    %{assigns: %{current_scope: scope, selected_devices: selected_devices, target_firmware: firmware}} =
+      socket
+
+    %{org: org} = scope
+
+    devices = Devices.get_devices_by_id(scope, selected_devices)
+
+    opts =
+      if proxy_url = get_in(org.settings.firmware_proxy_url) do
+        [firmware_proxy_url: proxy_url]
+      else
+        []
+      end
+
+    sent_count =
+      Enum.count(devices, fn device ->
+        case DeviceEvents.manual_update(device, firmware, scope.user, opts) do
+          {:ok, _} -> true
+          _ -> false
+        end
+      end)
+
+    socket
+    |> assign(:target_firmware, nil)
+    |> put_flash(:info, "Firmware update sent to #{sent_count} device(s).")
+    |> noreply()
+  end
+
+  @decorate requires_permission(:"device:update")
+  def handle_event("remove-devices-from-deployment-group", _, socket) do
+    %{assigns: %{current_scope: scope, selected_devices: selected_devices}} = socket
+
+    {:ok, count} = Devices.remove_many_from_deployment_group(scope, selected_devices)
+
+    socket
+    |> assign_display_devices()
+    |> put_flash(:info, "#{count} device(s) removed from their deployment group.")
+    |> noreply()
+  end
+
   @decorate requires_permission(:"device:update")
   def handle_event("disable-updates-for-devices", _, socket) do
     %{assigns: %{current_scope: scope, selected_devices: selected_devices}} = socket
@@ -494,9 +575,10 @@ defmodule NervesHubWeb.Live.Devices.Index do
 
   def handle_info(%Broadcast{event: "connection:status", payload: payload}, socket) do
     socket
-    |> assign(:received_connection_change_identifiers, [
-      payload | socket.assigns.received_connection_change_identifiers
-    ])
+    |> assign(
+      :received_connection_change_identifiers,
+      Map.put(socket.assigns.received_connection_change_identifiers, payload.device_id, payload)
+    )
     |> safe_refresh()
     |> update_device_statuses(payload)
   end
@@ -505,7 +587,7 @@ defmodule NervesHubWeb.Live.Devices.Index do
     socket
     |> assign(
       :received_connection_change_identifiers,
-      [payload | socket.assigns.received_connection_change_identifiers]
+      Map.put(socket.assigns.received_connection_change_identifiers, payload.device_id, payload)
     )
     |> safe_refresh()
     |> update_device_statuses(payload)
@@ -541,8 +623,6 @@ defmodule NervesHubWeb.Live.Devices.Index do
       |> safe_refresh()
       |> noreply()
     end
-
-    noreply(socket)
   end
 
   def handle_info(:refresh_device_list, socket) do
@@ -596,16 +676,16 @@ defmodule NervesHubWeb.Live.Devices.Index do
     %{devices: old_devices, device_statuses: old_device_statuses, paginate_opts: paginate_opts} =
       socket.assigns
 
+    Enum.each(
+      old_devices.result || [],
+      fn device -> socket.endpoint.unsubscribe("device:#{device.identifier}:internal") end
+    )
+
     updated_device_statuses =
       Map.new(updated_devices, fn device ->
         socket.endpoint.subscribe("device:#{device.identifier}:internal")
 
-        payload =
-          Enum.find(socket.assigns.received_connection_change_identifiers, fn %{
-                                                                                device_id: identifier
-                                                                              } ->
-            identifier == device.identifier
-          end)
+        payload = socket.assigns.received_connection_change_identifiers[device.identifier]
 
         if payload do
           {payload.device_id, payload.status}
@@ -617,7 +697,7 @@ defmodule NervesHubWeb.Live.Devices.Index do
     socket
     |> assign(:devices, AsyncResult.ok(old_devices, updated_devices))
     |> assign(:device_statuses, AsyncResult.ok(old_device_statuses, updated_device_statuses))
-    |> assign(:received_connection_change_identifiers, [])
+    |> assign(:received_connection_change_identifiers, %{})
     |> device_pagination_assigns(paginate_opts, pager)
     |> noreply()
   end
@@ -648,7 +728,10 @@ defmodule NervesHubWeb.Live.Devices.Index do
       "Live.Devices.Index.handle_async:update_filter_data failed due to exit: #{inspect(reason)}"
 
     {:ok, _} = Sentry.capture_message(message, result: :none)
+
     socket
+    |> assign(:filters_ready?, false)
+    |> noreply()
   end
 
   defp device_pagination_assigns(socket, paginate_opts, pager) do
@@ -803,18 +886,83 @@ defmodule NervesHubWeb.Live.Devices.Index do
          %{assigns: %{current_scope: scope, current_filters: %{platform: platform}}} = socket
        )
        when platform != "" do
-    assign(
-      socket,
+    socket
+    |> assign(
       :available_deployment_groups_for_filtered_platform,
       ManagedDeployments.get_by_product_and_platform(scope.product, platform)
     )
+    |> assign(
+      :available_firmwares_for_filtered_platform,
+      Firmwares.get_firmwares_by_product_and_platform(scope.product, platform)
+    )
   end
 
-  defp maybe_assign_available_deployment_groups_for_filtered_platform(socket),
-    do: assign(socket, :available_deployment_groups_for_filtered_platform, [])
+  defp maybe_assign_available_deployment_groups_for_filtered_platform(socket) do
+    socket
+    |> assign(:available_deployment_groups_for_filtered_platform, [])
+    |> assign(:available_firmwares_for_filtered_platform, [])
+  end
 
   defp has_results?(%AsyncResult{} = device_async, currently_filtering?) do
     device_async.ok? && (Enum.any?(device_async.result) || currently_filtering?)
+  end
+
+  defp update_selected_device_info(%{assigns: %{selected_devices: []}} = socket) do
+    socket
+    |> assign(:selected_shared_deployment_group, nil)
+    |> assign(:selected_have_deployment_groups, false)
+    |> assign(:valid_deployment_groups_for_selected, [])
+    |> assign(:target_deployment_group, nil)
+  end
+
+  defp update_selected_device_info(
+         %{assigns: %{selected_devices: selected_ids, devices: devices, product: product}} = socket
+       ) do
+    selected =
+      if devices.ok? do
+        Enum.filter(devices.result, &(&1.id in selected_ids))
+      else
+        []
+      end
+
+    # Determine deployment group info for "Remove from DG" section
+    deployment_ids =
+      selected
+      |> Enum.map(& &1.deployment_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    has_deployment_groups = Enum.any?(deployment_ids)
+
+    shared_deployment_group =
+      case deployment_ids do
+        [single_id] ->
+          Enum.find(socket.assigns.deployment_groups, &(&1.id == single_id))
+
+        _ ->
+          nil
+      end
+
+    # Determine valid deployment groups for "Set DG" section
+    # Only show DGs when all selected devices share a single platform,
+    # to prevent partially setting a deployment group.
+    platforms =
+      selected
+      |> Enum.map(fn d -> d.firmware_metadata && d.firmware_metadata.platform end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    valid_dgs =
+      case platforms do
+        [_single_platform] -> ManagedDeployments.get_by_product_and_platforms(product, platforms)
+        _ -> []
+      end
+
+    socket
+    |> assign(:selected_shared_deployment_group, shared_deployment_group)
+    |> assign(:selected_have_deployment_groups, has_deployment_groups)
+    |> assign(:valid_deployment_groups_for_selected, valid_dgs)
+    |> assign(:target_deployment_group, nil)
   end
 
   defp safe_refresh(socket) do

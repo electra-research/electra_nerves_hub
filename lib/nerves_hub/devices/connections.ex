@@ -64,8 +64,7 @@ defmodule NervesHub.Devices.Connections do
 
   defp connection_status_base_query() do
     DeviceConnection
-    |> join(:inner, [dc], p in assoc(dc, :product))
-    |> join(:inner, [dc], dev in assoc(dc, :device), on: dev.latest_connection_id == dc.id)
+    |> join(:inner, [dc], dev in assoc(dc, :device))
   end
 
   defp connection_status_counts(query) do
@@ -90,34 +89,33 @@ defmodule NervesHub.Devices.Connections do
   def get_latest_for_device(device_id) do
     DeviceConnection
     |> where(device_id: ^device_id)
-    |> order_by(desc: :last_seen_at)
-    |> limit(1)
     |> Repo.one()
   end
 
   @doc """
   Creates a device connection, reported from device socket
   """
-  @spec device_connecting(Device.t(), non_neg_integer()) ::
+  @spec device_connecting(Device.t()) ::
           {:ok, DeviceConnection.t()} | {:error, Ecto.Changeset.t()}
-  def device_connecting(device, product_id) do
-    now = DateTime.utc_now()
+  def device_connecting(device) do
+    conflict_query =
+      DeviceConnection
+      |> update([ldc],
+        set: [
+          id: fragment("EXCLUDED.id"),
+          established_at: fragment("EXCLUDED.established_at"),
+          last_seen_at: fragment("EXCLUDED.last_seen_at"),
+          disconnected_at: fragment("EXCLUDED.disconnected_at"),
+          disconnected_reason: fragment("EXCLUDED.disconnected_reason"),
+          metadata: fragment("EXCLUDED.metadata"),
+          status: fragment("EXCLUDED.status")
+        ]
+      )
 
-    changeset =
-      DeviceConnection.create_changeset(%{
-        product_id: product_id,
-        device_id: device.id,
-        established_at: now,
-        last_seen_at: now,
-        status: :connecting
-      })
-
-    case Repo.insert(changeset) do
+    DeviceConnection.connecting_changeset(device)
+    |> Repo.insert(on_conflict: conflict_query, conflict_target: [:device_id])
+    |> case do
       {:ok, device_connection} ->
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: device_connection.id])
-
         Tracker.connecting(device)
 
         {:ok, device_connection}
@@ -186,15 +184,12 @@ defmodule NervesHub.Devices.Connections do
     DeviceConnection
     |> where(id: ^ref_id)
     |> Repo.update_all(
-      [
-        set: [
-          last_seen_at: now,
-          disconnected_at: now,
-          disconnected_reason: reason,
-          status: :disconnected
-        ]
-      ],
-      timeout: 60_000
+      set: [
+        last_seen_at: now,
+        disconnected_at: now,
+        disconnected_reason: reason,
+        status: :disconnected
+      ]
     )
     |> case do
       {1, _} ->
@@ -224,56 +219,44 @@ defmodule NervesHub.Devices.Connections do
   def clean_stale_connections() do
     interval = Application.get_env(:nerves_hub, :device_last_seen_update_interval_minutes)
     jitter = Application.get_env(:nerves_hub, :device_last_seen_update_interval_jitter_seconds)
+    update_limit = Application.get_env(:nerves_hub, :device_connection_update_limit)
 
     max_jitter = ceil(jitter / 60)
-
     some_time_ago = DateTime.shift(DateTime.utc_now(), minute: -(interval + max_jitter + 1))
-
-    {count, _} =
-      DeviceConnection
-      |> where(status: :connected)
-      |> where([d], d.last_seen_at < ^some_time_ago)
-      |> Repo.update_all(
-        set: [
-          status: :disconnected,
-          disconnected_at: DateTime.utc_now(),
-          disconnected_reason: "Stale connection"
-        ]
-      )
-
-    if count > 0 do
-      :telemetry.execute([:nerves_hub, :devices, :stale_connections], %{count: count})
-    end
-
-    :ok
-  end
-
-  def delete_old_connections() do
-    interval = Application.get_env(:nerves_hub, :device_connection_max_age_days)
-    delete_limit = Application.get_env(:nerves_hub, :device_connection_delete_limit)
-    days_ago = DateTime.shift(DateTime.utc_now(), day: -interval)
+    now = DateTime.utc_now()
 
     query =
       DeviceConnection
-      |> join(:inner, [dc], d in Device, on: dc.device_id == d.id)
-      |> where([dc, _d], dc.last_seen_at < ^days_ago)
-      |> where([dc, _d], dc.status != :connected)
-      |> where([dc, d], dc.id != d.latest_connection_id)
+      |> where(status: :connected)
+      |> where([d], d.last_seen_at < ^some_time_ago)
       |> select([dc], dc.id)
-      |> limit(^delete_limit)
+      |> limit(^update_limit)
       |> order_by(:last_seen_at)
 
-    {delete_count, _} =
+    {update_count, _} =
       DeviceConnection
       |> where([d], d.id in subquery(query))
-      |> Repo.delete_all(timeout: 60_000)
+      |> Repo.update_all(
+        [
+          set: [
+            status: :disconnected,
+            disconnected_at: now,
+            disconnected_reason: "Stale connection"
+          ]
+        ],
+        timeout: 60_000
+      )
 
-    if delete_count == 0 do
+    if update_count > 0 do
+      :telemetry.execute([:nerves_hub, :devices, :stale_connections], %{count: update_count})
+    end
+
+    if update_count < update_limit do
       :ok
     else
       # relax stress on Ecto pool and go again
       Process.sleep(2000)
-      delete_old_connections()
+      clean_stale_connections()
     end
   end
 end

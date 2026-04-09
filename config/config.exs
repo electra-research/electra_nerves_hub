@@ -3,7 +3,6 @@ import Config
 alias NervesHub.Accounts.Scope
 alias NervesHub.Workers.CleanStaleDeviceConnections
 alias NervesHub.Workers.CleanUpSoftDeletedDevices
-alias NervesHub.Workers.DeleteOldDeviceConnections
 alias NervesHub.Workers.DeviceHealthTruncation
 alias NervesHub.Workers.ExpireInflightUpdates
 alias NervesHub.Workers.FirmwareDeltaTimeout
@@ -84,7 +83,6 @@ config :nerves_hub, Oban,
        {"0 * * * *", ScheduleOrgAuditLogTruncation},
        {"*/1 * * * *", CleanStaleDeviceConnections},
        {"* * * * *", FirmwareDeltaTimeout},
-       {"1,16,31,46 * * * *", DeleteOldDeviceConnections},
        {"*/5 * * * *", ExpireInflightUpdates},
        {"*/15 * * * *", DeviceHealthTruncation},
        {"*/15 * * * *", CleanUpSoftDeletedDevices}
@@ -142,7 +140,7 @@ config :phoenix,
 config :swoosh, :api_client, Finch
 
 config :tailwind,
-  version: "4.2.1",
+  version: "4.2.2",
   default: [
     args: ~w(
       --input=assets/css/app.css

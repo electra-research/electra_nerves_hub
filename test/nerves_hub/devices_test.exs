@@ -14,12 +14,14 @@ defmodule NervesHub.DevicesTest do
   alias NervesHub.Devices.DeviceConnection
   alias NervesHub.Devices.DeviceHealth
   alias NervesHub.Firmwares
+  alias NervesHub.Firmwares.Firmware
   alias NervesHub.Fixtures
   alias NervesHub.ManagedDeployments
   alias NervesHub.ManagedDeployments.DeploymentRelease
   alias NervesHub.Products
   alias NervesHub.Repo
   alias NervesHub.Support.Fwup
+  alias NervesHub.Workers.FirmwareDeltaBuilder
   alias Phoenix.Socket.Broadcast
 
   setup %{tmp_dir: tmp_dir} do
@@ -704,8 +706,6 @@ defmodule NervesHub.DevicesTest do
       assert {:ok, %Devices.DeviceHealth{id: health_id}} =
                Devices.save_device_health(device_health)
 
-      assert %Devices.DeviceHealth{} = Devices.get_latest_health(device.id)
-
       # Assert device is updated with latest health
       assert %{latest_health_id: ^health_id} = Devices.get_device(device.id)
     end
@@ -723,6 +723,160 @@ defmodule NervesHub.DevicesTest do
 
       assert device.deployment_id == deployment_group.id
       assert_receive %{event: "deployment_updated"}
+    end
+
+    test "broadcasts device-added when device is added to a deployment group", %{
+      user: user,
+      deployment_group: deployment_group,
+      org_key: org_key,
+      product: product,
+      device: device,
+      tmp_dir: tmp_dir
+    } do
+      # Create new device firmware and target firmware to ensure delta doesn't already exist
+      device_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Update device to use the new device firmware
+      {:ok, device} = Devices.update_firmware_metadata(device, %{"uuid" => device_firmware.uuid}, :unknown, false)
+
+      {:ok, deployment_group} =
+        ManagedDeployments.update_deployment_group(
+          deployment_group,
+          %{
+            concurrent_updates: 2,
+            delta_updatable: true
+          },
+          user
+        )
+
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(deployment_group, target_firmware, nil, user, %{})
+
+      deployment_topic = "orchestrator:deployment:#{deployment_group.id}"
+      Phoenix.PubSub.subscribe(NervesHub.PubSub, deployment_topic)
+
+      _device = Devices.update_deployment_group(device, deployment_group)
+
+      # Assert that the device-added event was broadcast
+      assert_receive %Broadcast{topic: ^deployment_topic, event: "device-added"}, 500
+    end
+
+    test "triggers delta generation when device is added to a delta-updatable deployment group", %{
+      user: user,
+      deployment_group: deployment_group,
+      org_key: org_key,
+      product: product,
+      device: device,
+      tmp_dir: tmp_dir
+    } do
+      # Create new device firmware and target firmware to ensure delta doesn't already exist
+      device_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Update device to use the new device firmware
+      {:ok, device} = Devices.update_firmware_metadata(device, %{"uuid" => device_firmware.uuid}, :unknown, false)
+
+      {:ok, deployment_group} =
+        ManagedDeployments.update_deployment_group(
+          deployment_group,
+          %{
+            concurrent_updates: 2,
+            delta_updatable: true
+          },
+          user
+        )
+
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(deployment_group, target_firmware, nil, user, %{})
+
+      _device = Devices.update_deployment_group(device, deployment_group)
+
+      # Delta generation happens inline in the transaction
+      # Assert that delta generation job was enqueued for the new firmware pair
+      assert_enqueued(
+        worker: FirmwareDeltaBuilder,
+        args: %{"source_id" => device_firmware.id, "target_id" => target_firmware.id}
+      )
+    end
+
+    test "broadcasts bulk-devices-added when a group (bulk) of devices are added to a deployment group", %{
+      deployment_group: deployment_group,
+      org_key: org_key,
+      product: product,
+      device: device1,
+      device2: device2,
+      user: user,
+      tmp_dir: tmp_dir
+    } do
+      # Create new device firmware and target firmware to ensure delta doesn't already exist
+      device_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Update devices to use the new device firmware
+      {:ok, device1} = Devices.update_firmware_metadata(device1, %{"uuid" => device_firmware.uuid}, :unknown, false)
+      {:ok, device2} = Devices.update_firmware_metadata(device2, %{"uuid" => device_firmware.uuid}, :unknown, false)
+
+      {:ok, deployment_group} =
+        ManagedDeployments.update_deployment_group(
+          deployment_group,
+          %{
+            concurrent_updates: 2,
+            delta_updatable: true
+          },
+          user
+        )
+
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(deployment_group, target_firmware, nil, user, %{})
+
+      deployment_topic = "orchestrator:deployment:#{deployment_group.id}"
+      Phoenix.PubSub.subscribe(NervesHub.PubSub, deployment_topic)
+
+      Devices.move_many_to_deployment_group(Scope.for_user(user), [device1.id, device2.id], deployment_group)
+
+      # Assert that the bulk-devices-added event was broadcast
+      assert_receive %Broadcast{topic: ^deployment_topic, event: "bulk-devices-added"}, 500
+    end
+
+    test "triggers delta generation when a group (bulk) of devices are added to a delta-updatable deployment group", %{
+      deployment_group: deployment_group,
+      org_key: org_key,
+      product: product,
+      device: device1,
+      device2: device2,
+      user: user,
+      tmp_dir: tmp_dir
+    } do
+      # Create new device firmware and target firmware to ensure delta doesn't already exist
+      device_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Update devices to use the new device firmware
+      {:ok, device1} = Devices.update_firmware_metadata(device1, %{"uuid" => device_firmware.uuid}, :unknown, false)
+      {:ok, device2} = Devices.update_firmware_metadata(device2, %{"uuid" => device_firmware.uuid}, :unknown, false)
+
+      {:ok, deployment_group} =
+        ManagedDeployments.update_deployment_group(
+          deployment_group,
+          %{
+            concurrent_updates: 2,
+            delta_updatable: true
+          },
+          user
+        )
+
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(deployment_group, target_firmware, nil, user, %{})
+
+      Devices.move_many_to_deployment_group(Scope.for_user(user), [device1.id, device2.id], deployment_group)
+
+      # Delta generation happens inline in the transaction
+      # Assert that delta generation job was enqueued for the new firmware pair
+      assert_enqueued(
+        worker: FirmwareDeltaBuilder,
+        args: %{"source_id" => device_firmware.id, "target_id" => target_firmware.id}
+      )
     end
   end
 
@@ -763,19 +917,13 @@ defmodule NervesHub.DevicesTest do
         Fixtures.device_fixture(org, product, deployment_group.current_release.firmware)
 
       Enum.with_index([device1, device2, device3, device4], fn device, index ->
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now() |> DateTime.add(index + 1, :minute),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now() |> DateTime.add(index + 1, :minute),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -833,19 +981,13 @@ defmodule NervesHub.DevicesTest do
         })
 
       Enum.each([device1, device2, device3, device4], fn device ->
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -893,19 +1035,13 @@ defmodule NervesHub.DevicesTest do
 
       # Set up connections and different firmware versions for all devices
       for device <- [device_wifi, device_ethernet, device_cellular, device_unknown] do
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -949,19 +1085,13 @@ defmodule NervesHub.DevicesTest do
 
       # Set up connections and different firmware versions
       for device <- [device_wifi, device_cellular] do
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -1013,19 +1143,13 @@ defmodule NervesHub.DevicesTest do
 
       # Set up connections and different firmware versions for all devices
       for device <- [device_both, device_prod_only, device_beta_only, device_no_tags] do
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -1069,19 +1193,13 @@ defmodule NervesHub.DevicesTest do
 
       # Set up connections and different firmware versions
       for device <- [device_tagged, device_no_tags] do
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -1142,19 +1260,13 @@ defmodule NervesHub.DevicesTest do
 
       # Set up connections and different firmware versions for all devices
       for device <- [device_wifi_prod, device_wifi_dev, device_cellular_prod, device_ethernet_prod] do
-        %{id: latest_connection_id} =
-          DeviceConnection.create_changeset(%{
-            product_id: product.id,
-            device_id: device.id,
-            established_at: DateTime.utc_now(),
-            last_seen_at: DateTime.utc_now(),
-            status: :connected
-          })
-          |> Repo.insert!()
-
-        Device
-        |> where(id: ^device.id)
-        |> Repo.update_all(set: [latest_connection_id: latest_connection_id])
+        Ecto.Changeset.change(%DeviceConnection{}, %{
+          device_id: device.id,
+          established_at: DateTime.utc_now(),
+          last_seen_at: DateTime.utc_now(),
+          status: :connected
+        })
+        |> Repo.insert!()
 
         {:ok, device} =
           Devices.update_firmware_metadata(
@@ -1195,7 +1307,7 @@ defmodule NervesHub.DevicesTest do
       new_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
 
       {:ok, _} =
-        NervesHub.ManagedDeployments.create_deployment_release(deployment_group, new_firmware, nil, user)
+        NervesHub.ManagedDeployments.create_deployment_release(deployment_group, new_firmware, nil, user, %{})
 
       # create a device using the firmware of the deployment group cached in the test
       Fixtures.device_fixture(org, product, deployment_group.current_release.firmware, %{
@@ -1206,6 +1318,298 @@ defmodule NervesHub.DevicesTest do
       available = Devices.available_for_update(deployment_group, 10)
 
       assert Enum.empty?(available)
+    end
+
+    test "excludes devices when firmware_delta exists with status :processing", %{
+      deployment_group: deployment_group,
+      org: org,
+      product: product,
+      org_key: org_key,
+      user: user,
+      tmp_dir: tmp_dir
+    } do
+      # Create source and target firmwares
+      source_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Create a new deployment release for the target firmware
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(
+          deployment_group,
+          target_firmware,
+          nil,
+          user,
+          %{},
+          broadcast: false,
+          audit: false
+        )
+
+      # Create device with source firmware
+      device =
+        Fixtures.device_fixture(org, product, source_firmware, %{
+          deployment_id: deployment_group.id
+        })
+
+      # Explicitly set device firmware metadata to match source firmware UUID
+      {:ok, device} =
+        Devices.update_firmware_metadata(
+          device,
+          Map.from_struct(%{device.firmware_metadata | uuid: source_firmware.uuid}),
+          :unknown,
+          false
+        )
+
+      # Set up device connection
+      %DeviceConnection{}
+      |> Ecto.Changeset.change(%{
+        device_id: device.id,
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
+        status: :connected
+      })
+      |> Repo.insert!()
+
+      # Create firmware_delta with status :processing
+      delta =
+        Fixtures.firmware_delta_fixture(source_firmware, target_firmware, %{status: :processing})
+
+      # Verify the delta was created correctly
+      assert delta.source_id == source_firmware.id
+      assert delta.target_id == target_firmware.id
+      assert delta.status == :processing
+
+      # Device should NOT be available because delta is still processing
+      available = Devices.available_for_update(deployment_group, 10)
+      assert Enum.empty?(available)
+    end
+
+    test "excludes devices when firmware_delta exists with status :failed", %{
+      deployment_group: deployment_group,
+      org: org,
+      product: product,
+      org_key: org_key,
+      user: user,
+      tmp_dir: tmp_dir
+    } do
+      # Create source and target firmwares
+      source_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Create a new deployment release for the target firmware
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(
+          deployment_group,
+          target_firmware,
+          nil,
+          user,
+          %{},
+          broadcast: false,
+          audit: false
+        )
+
+      # Create device with source firmware
+      device =
+        Fixtures.device_fixture(org, product, source_firmware, %{
+          deployment_id: deployment_group.id
+        })
+
+      # Explicitly set device firmware metadata to match source firmware UUID
+      {:ok, device} =
+        Devices.update_firmware_metadata(
+          device,
+          Map.from_struct(%{device.firmware_metadata | uuid: source_firmware.uuid}),
+          :unknown,
+          false
+        )
+
+      # Set up device connection
+      %DeviceConnection{}
+      |> Ecto.Changeset.change(%{
+        device_id: device.id,
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
+        status: :connected
+      })
+      |> Repo.insert!()
+
+      # Create firmware_delta with status :failed
+      _delta =
+        Fixtures.firmware_delta_fixture(source_firmware, target_firmware, %{status: :failed})
+
+      # Device should NOT be available because delta failed
+      available = Devices.available_for_update(deployment_group, 10)
+      assert Enum.empty?(available)
+    end
+
+    test "includes devices when firmware_delta exists with status :completed", %{
+      deployment_group: deployment_group,
+      org: org,
+      product: product,
+      org_key: org_key,
+      tmp_dir: tmp_dir,
+      user: user
+    } do
+      # Create source and target firmwares
+      source_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Create a new deployment release for the target firmware
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(
+          deployment_group,
+          target_firmware,
+          nil,
+          user,
+          %{},
+          broadcast: false,
+          audit: false
+        )
+
+      # Create device with source firmware
+      device =
+        Fixtures.device_fixture(org, product, source_firmware, %{
+          deployment_id: deployment_group.id
+        })
+
+      # Explicitly set device firmware metadata to match source firmware UUID
+      {:ok, device} =
+        Devices.update_firmware_metadata(
+          device,
+          Map.from_struct(%{device.firmware_metadata | uuid: source_firmware.uuid}),
+          :unknown,
+          false
+        )
+
+      # Set up device connection
+      %DeviceConnection{}
+      |> Ecto.Changeset.change(%{
+        device_id: device.id,
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
+        status: :connected
+      })
+      |> Repo.insert!()
+
+      # Create firmware_delta with status :completed
+      _delta =
+        Fixtures.firmware_delta_fixture(source_firmware, target_firmware, %{status: :completed})
+
+      # Device SHOULD be available because delta is completed
+      available = Devices.available_for_update(deployment_group, 10)
+      assert length(available) == 1
+      assert hd(available).id == device.id
+    end
+
+    test "includes devices when no firmware_delta exists", %{
+      deployment_group: deployment_group,
+      org: org,
+      product: product,
+      org_key: org_key,
+      tmp_dir: tmp_dir,
+      user: user
+    } do
+      # Create source and target firmwares
+      source_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Create a new deployment release for the target firmware
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(
+          deployment_group,
+          target_firmware,
+          nil,
+          user,
+          %{},
+          broadcast: false,
+          audit: false
+        )
+
+      # Create device with source firmware
+      device =
+        Fixtures.device_fixture(org, product, source_firmware, %{
+          deployment_id: deployment_group.id
+        })
+
+      # Explicitly set device firmware metadata to match source firmware UUID
+      {:ok, device} =
+        Devices.update_firmware_metadata(
+          device,
+          Map.from_struct(%{device.firmware_metadata | uuid: source_firmware.uuid}),
+          :unknown,
+          false
+        )
+
+      # Set up device connection
+      %DeviceConnection{}
+      |> Ecto.Changeset.change(%{
+        device_id: device.id,
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
+        status: :connected
+      })
+      |> Repo.insert!()
+
+      # No firmware_delta created - device will use full firmware
+
+      # Device SHOULD be available because no delta exists (will use full firmware)
+      available = Devices.available_for_update(deployment_group, 10)
+      assert length(available) == 1
+      assert hd(available).id == device.id
+    end
+
+    test "includes devices when no matching firmware found for the device UUID", %{
+      deployment_group: deployment_group,
+      org: org,
+      product: product,
+      org_key: org_key,
+      tmp_dir: tmp_dir,
+      user: user
+    } do
+      # Create target firmware for deployment group
+      target_firmware = Fixtures.firmware_fixture(org_key, product, %{dir: tmp_dir})
+
+      # Create a new deployment release for the target firmware
+      {:ok, {_release, deployment_group}} =
+        ManagedDeployments.create_deployment_release(
+          deployment_group,
+          target_firmware,
+          nil,
+          user,
+          %{},
+          broadcast: false,
+          audit: false
+        )
+
+      # Create device with deployment_id
+      device =
+        Fixtures.device_fixture(org, product, target_firmware, %{
+          deployment_id: deployment_group.id
+        })
+
+      # Set up device connection
+      %DeviceConnection{}
+      |> Ecto.Changeset.change(%{
+        device_id: device.id,
+        established_at: DateTime.utc_now(),
+        last_seen_at: DateTime.utc_now(),
+        status: :connected
+      })
+      |> Repo.insert!()
+
+      # Update device firmware_metadata to a UUID that doesn't exist in the firmwares table
+      {:ok, device} =
+        Devices.update_firmware_metadata(
+          device,
+          %{"uuid" => UUIDv7.autogenerate()},
+          :unknown,
+          false
+        )
+
+      # Device SHOULD be available even though source firmware UUID doesn't exist
+      # (subquery will return nil, LEFT JOIN will have no firmware_delta match)
+      available = Devices.available_for_update(deployment_group, 10)
+      assert length(available) == 1
+      assert hd(available).id == device.id
     end
   end
 
@@ -1497,7 +1901,10 @@ defmodule NervesHub.DevicesTest do
           current_release: %{deployment_group.current_release | firmware: %{target_firmware | delta_updatable: true}}
       }
 
-      {:ok, url} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      {:ok, firmware} = Devices.get_delta_or_firmware(device, deployment_group)
+
+      {:ok, url} = Firmwares.get_firmware_url(firmware)
+
       assert String.ends_with?(url, ".delta.fw")
     end
 
@@ -1509,7 +1916,10 @@ defmodule NervesHub.DevicesTest do
       refute deployment_group.delta_updatable
       refute firmware.delta_updatable
 
-      {:ok, url} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      {:ok, firmware} = Devices.get_delta_or_firmware(device, deployment_group)
+
+      {:ok, url} = Firmwares.get_firmware_url(firmware)
+
       assert String.ends_with?(url, "#{firmware.uuid}.fw")
     end
 
@@ -1524,7 +1934,10 @@ defmodule NervesHub.DevicesTest do
           current_release: %DeploymentRelease{firmware: %{firmware | delta_updatable: true}}
       }
 
-      {:ok, url} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      {:ok, firmware} = Devices.get_delta_or_firmware(device, deployment_group)
+
+      {:ok, url} = Firmwares.get_firmware_url(firmware)
+
       assert String.ends_with?(url, "#{firmware.uuid}.fw")
     end
 
@@ -1541,11 +1954,14 @@ defmodule NervesHub.DevicesTest do
           }
       }
 
-      {:ok, url} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      {:ok, firmware} = Devices.get_delta_or_firmware(device, deployment_group)
+
+      {:ok, url} = Firmwares.get_firmware_url(firmware)
+
       assert String.ends_with?(url, "#{firmware.uuid}.fw")
     end
 
-    test "returns error if device does not support deltas", %{
+    test "returns the full firmware if device does not support deltas", %{
       device: device,
       deployment_group: deployment_group,
       org_key: org_key,
@@ -1561,10 +1977,10 @@ defmodule NervesHub.DevicesTest do
           current_release: %{deployment_group.current_release | firmware: %{target_firmware | delta_updatable: true}}
       }
 
-      assert {:error, :device_does_not_support_deltas} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      assert {:ok, %Firmware{}} = Devices.get_delta_or_firmware(device, deployment_group)
     end
 
-    test "returns error if delta isn't ready", %{
+    test "returns the full firmware if delta isn't ready", %{
       device: device,
       deployment_group: deployment_group,
       org_key: org_key,
@@ -1586,7 +2002,7 @@ defmodule NervesHub.DevicesTest do
           current_release: %{deployment_group.current_release | firmware: %{target_firmware | delta_updatable: true}}
       }
 
-      assert {:error, :delta_not_completed} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      assert {:ok, %Firmware{}} = Devices.get_delta_or_firmware(device, deployment_group)
     end
 
     test "returns full firmware url when source firmware can't be found", %{
@@ -1611,7 +2027,10 @@ defmodule NervesHub.DevicesTest do
           current_release: %{deployment_group.current_release | firmware: %{target_firmware | delta_updatable: true}}
       }
 
-      assert {:ok, url} = Devices.get_delta_or_firmware_url(device, deployment_group)
+      {:ok, firmware} = Devices.get_delta_or_firmware(device, deployment_group)
+
+      {:ok, url} = Firmwares.get_firmware_url(firmware)
+
       assert String.ends_with?(url, "#{target_firmware.uuid}.fw")
     end
   end
@@ -1641,6 +2060,59 @@ defmodule NervesHub.DevicesTest do
     test "cannot be explicitly set to nil", %{device: device} do
       {:error, changeset} = Devices.update_network_interface(device, nil)
       {"cannot be set to nil", []} = changeset.errors[:network_interface]
+    end
+  end
+
+  describe "remove_many_from_deployment_group/2" do
+    test "removes deployment group from devices that have one", %{
+      user: user,
+      org: org,
+      product: product,
+      device: device,
+      device2: device2,
+      deployment_group: deployment_group
+    } do
+      scope = Scope.for_user(user) |> Scope.put_org(org) |> Scope.put_product(product)
+      Repo.update!(Changeset.change(device, deployment_id: deployment_group.id))
+      Repo.update!(Changeset.change(device2, deployment_id: deployment_group.id))
+
+      {:ok, count} = Devices.remove_many_from_deployment_group(scope, [device.id, device2.id])
+
+      assert count == 2
+
+      assert Repo.get!(Device, device.id).deployment_id == nil
+      assert Repo.get!(Device, device2.id).deployment_id == nil
+    end
+
+    test "only counts devices that had a deployment group", %{
+      user: user,
+      org: org,
+      product: product,
+      device: device,
+      device2: device2,
+      deployment_group: deployment_group
+    } do
+      scope = Scope.for_user(user) |> Scope.put_org(org) |> Scope.put_product(product)
+      Repo.update!(Changeset.change(device, deployment_id: deployment_group.id))
+      # device2 has no deployment group
+
+      {:ok, count} = Devices.remove_many_from_deployment_group(scope, [device.id, device2.id])
+
+      assert count == 1
+    end
+
+    test "returns zero when no devices have a deployment group", %{
+      user: user,
+      org: org,
+      product: product,
+      device: device
+    } do
+      scope = Scope.for_user(user) |> Scope.put_org(org) |> Scope.put_product(product)
+      refute device.deployment_id
+
+      {:ok, count} = Devices.remove_many_from_deployment_group(scope, [device.id])
+
+      assert count == 0
     end
   end
 end
