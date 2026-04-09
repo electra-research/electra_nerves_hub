@@ -92,13 +92,18 @@ defmodule NervesHubWeb.API.DeploymentGroupController do
         "deployment" => deployment_group_params
       }) do
     with {:ok, deployment_group} <-
-           ManagedDeployments.get_deployment_group_by_name(product, name),
-         params = update_params(product, deployment_group_params),
-         {:ok, updated_deployment_group} <-
-           ManagedDeployments.update_deployment_group(deployment_group, params, user) do
-      DeploymentGroupTemplates.audit_deployment_updated(user, deployment_group)
+           ManagedDeployments.get_deployment_group_by_name(product, name) do
+      params = update_params(product, deployment_group_params)
 
-      render(conn, :show, deployment_group: updated_deployment_group)
+      if is_map_key(params, "firmware_id") or is_map_key(params, "archive_id") do
+        update(conn, %{"name" => name, "deployment" => params})
+      else
+        with {:ok, updated_deployment_group} <-
+               ManagedDeployments.update_deployment_group(deployment_group, params, user) do
+          DeploymentGroupTemplates.audit_deployment_updated(user, deployment_group)
+          render(conn, :show, deployment_group: updated_deployment_group)
+        end
+      end
     end
   end
 
